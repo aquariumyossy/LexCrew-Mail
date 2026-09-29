@@ -1,6 +1,5 @@
 import { DEFAULT_MODEL, DEFAULT_TIMEOUT_MS } from "../shared/constants";
 import { clipPage, OCR_PROMPT } from "../shared/ocr";
-import { ToolCall } from "../shared/tools";
 import { normalizeThinkingLevel, thinkingFields, ThinkingLevel } from "../shared/thinking";
 
 export type ChatRequest = {
@@ -156,26 +155,4 @@ async function failureDetail(res: Response): Promise<string> {
     return text.slice(0, 500);
   }
   return text.slice(0, 500);
-}
-
-export async function postChat(request: ChatRequest): Promise<{
-  content: string;
-  toolCalls: ToolCall[];
-}> {
-  if (!request.llmApiKey.trim()) {
-    throw new Error("API キーがありません。");
-  }
-  if (!request.messages.length) {
-    throw new Error("メッセージがありません。");
-  }
-  const res = await postUpstream(request, false);
-  if (!res.ok) {
-    throw new Error(`LLM が失敗しました。${res.status}`);
-  }
-  const payload = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string; tool_calls?: ToolCall[] } }>;
-  };
-  const message = payload.choices?.[0]?.message;
-  const toolCalls = (message?.tool_calls ?? []).filter((call) => call.function?.name);
-  return { content: message?.content ?? "", toolCalls };
 }
