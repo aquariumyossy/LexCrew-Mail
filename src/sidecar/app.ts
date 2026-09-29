@@ -11,6 +11,7 @@ import { llmRoot, pipeChatStream, readImageText } from "./llm";
 import { argosHealth, argosScopes, argosSearch, normalizeBase } from "./remote";
 import { searxngSearch } from "./search";
 import { appointmentsFromIcs, fetchGoogleIcs } from "./ical";
+import { parseLocal } from "../shared/freeSlots";
 import { adoptConnection, connectionFromBody, connectionPath, Connection, ConnectionFile, readConnection, resolveConnection, saveConnection, sweepConnectionTemps } from "./connection";
 
 function clientSignal(res: Response, timeoutMs: number): { signal: AbortSignal; timedOut: () => boolean } {
@@ -37,12 +38,6 @@ function activeConnection(body: unknown): Connection {
 function connectionPayload(file: ConnectionFile): { kind: "ready"; llmBaseUrl: string; llmApiKey: string; searxngUrl: string } | { kind: "absent" } | { kind: "broken" } {
   if (file.kind !== "ready") return { kind: file.kind };
   return { kind: "ready", ...file.connection };
-}
-
-function parseRange(value: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value);
-  if (!match) return null;
-  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), 0, 0);
 }
 
 export function createApp(): Express {
@@ -243,8 +238,8 @@ export function createApp(): Express {
 
   app.post("/api/calendar/ical", async (req, res) => {
     try {
-      const from = parseRange(String(req.body?.from ?? ""));
-      const to = parseRange(String(req.body?.to ?? ""));
+      const from = parseLocal(String(req.body?.from ?? ""));
+      const to = parseLocal(String(req.body?.to ?? ""));
       if (!from || !to || to.getTime() <= from.getTime()) {
         res.status(400).json({ error: "予定の期間が不正です。" });
         return;

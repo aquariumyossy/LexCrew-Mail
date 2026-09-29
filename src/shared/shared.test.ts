@@ -4,9 +4,22 @@ import { fitContext } from "./context";
 import { clampTimeoutMs, DEFAULT_THINKING_BUDGET, MIN_THINKING_BUDGET } from "./constants";
 import { systemPrompt } from "./prompts";
 import { normalizeThinkingLevel, thinkingFields } from "./thinking";
-import { findFreeSlots, normalizeSlotQuery } from "./freeSlots";
+import { findFreeSlots, normalizeSlotQuery, parseLocal } from "./freeSlots";
 import { replyShortcutLabel, shortcutInstruction } from "./replies";
 import { normalizeMaxToolRounds, parseToolCall, TOOL_APPLY_DRAFT, TOOL_FIND_FREE_SLOTS, TOOL_LIST_EVENTS, TOOL_SEARCH_SENT, buildTools, describeToolCall, toolRoundLimitNotice, toolRoundPresetLabel, UNLIMITED_TOOL_ROUNDS } from "./tools";
+
+describe("parseLocal", () => {
+  it("parses local YYYY-MM-DDTHH:mm and rejects date-only", () => {
+    const parsed = parseLocal("2026-09-29T09:30");
+    expect(parsed).not.toBeNull();
+    expect(parsed!.getFullYear()).toBe(2026);
+    expect(parsed!.getMonth()).toBe(8);
+    expect(parsed!.getDate()).toBe(29);
+    expect(parsed!.getHours()).toBe(9);
+    expect(parsed!.getMinutes()).toBe(30);
+    expect(parseLocal("2026-09-29")).toBeNull();
+  });
+});
 
 describe("decideApply", () => {
   it("writes only in compose", () => {
