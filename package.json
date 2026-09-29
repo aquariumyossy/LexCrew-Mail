@@ -2,6 +2,7 @@
   "name": "kuru",
   "version": "1.0.0",
   "private": true,
+  "license": "Elastic-2.0",
   "description": "Outlook クラシックの作業ウィンドウからローカル LLM と Argos でメールを下書きする",
   "scripts": {
     "dev-server": "tsx src/server.ts",
