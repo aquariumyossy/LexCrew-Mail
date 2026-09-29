@@ -1,5 +1,6 @@
 import { MAX_OCR_PAGES, RASTER_QUALITY, RASTER_WIDTH } from "../../shared/constants";
 import { FileBody, FileReadError, pdfPagesToText } from "../../shared/attachedFiles";
+import { EMPTY_SCAN_ERROR } from "../../shared/ocr";
 import { openPdf } from "./pdf";
 
 /* global AbortSignal, File, HTMLCanvasElement, document, FileReader */
@@ -81,7 +82,7 @@ export async function ocrBytes(
   }
   const text = pdfPagesToText(read, "ocr");
   if (!text.body) {
-    throw new FileReadError("画像から文字を読み取れませんでした。");
+    throw new FileReadError(EMPTY_SCAN_ERROR);
   }
   return { ...text, truncated: pages > total };
 }
