@@ -1,0 +1,8 @@
+node_modules
+dist
+release
+*.log
+sidecar.err
+outlook/packages/
+outlook/nuget.exe
+installer/lexcrew.ico
