@@ -29,6 +29,10 @@ export function chatPayload(request: ChatRequest, stream: boolean, withThinking:
   return body;
 }
 
+export function llmRoot(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+}
+
 export type ChatSink = {
   status(code: number): void;
   setHeader(name: string, value: string): void;
@@ -38,7 +42,7 @@ export type ChatSink = {
 };
 
 async function postUpstream(request: ChatRequest, stream: boolean, signal?: AbortSignal): Promise<Response> {
-  const root = request.llmBaseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+  const root = llmRoot(request.llmBaseUrl);
   const headers = {
     Authorization: `Bearer ${request.llmApiKey}`,
     "Content-Type": "application/json",

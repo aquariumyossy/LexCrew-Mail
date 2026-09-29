@@ -7,7 +7,7 @@ import { mapArgosHits } from "../shared/argos";
 import { appendMessage, deleteConversation, deletePerson, getConversation, listConversations, openHistory, readMemory, replaceNotes, setConversationFiles, startConversation, upsertPerson } from "./history";
 import { parseNotes, parsePerson } from "../shared/memory";
 import { parseCommittedFiles } from "../shared/attachedFiles";
-import { pipeChatStream, readImageText } from "./llm";
+import { llmRoot, pipeChatStream, readImageText } from "./llm";
 import { argosHealth, argosScopes, argosSearch, normalizeBase } from "./remote";
 import { searxngSearch } from "./search";
 import { appointmentsFromIcs, fetchGoogleIcs } from "./ical";
@@ -298,7 +298,7 @@ async function probeLlm(baseUrl: string, apiKey: string): Promise<{ ok: boolean;
     return { ok: false, error: "LLM の URL と API キーを入れてください。" };
   }
   try {
-    const root = baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+    const root = llmRoot(baseUrl);
     const res = await fetch(`${root}/v1/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
     if (!res.ok) {
       return { ok: false, error: `モデル一覧が失敗しました。${res.status}` };

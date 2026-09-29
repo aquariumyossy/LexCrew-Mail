@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { OCR_PROMPT } from "../shared/ocr";
-import { chatPayload, imageReadRequest } from "./llm";
+import { chatPayload, imageReadRequest, llmRoot } from "./llm";
+
+describe("llmRoot", () => {
+  it("strips trailing slashes and a /v1 suffix", () => {
+    expect(llmRoot("http://h:8000/v1/")).toBe("http://h:8000");
+    expect(llmRoot("http://h:8000")).toBe("http://h:8000");
+  });
+});
 
 describe("imageReadRequest", () => {
   it("turns thinking off and offers no tools", () => {
