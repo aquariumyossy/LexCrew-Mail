@@ -2,7 +2,6 @@ import {
   FileReadError,
   FileSource,
   fileKind,
-  isPending,
 } from "../../shared/attachedFiles";
 import { isLoopbackUrl } from "../../shared/ocr";
 import { Settings, readImage } from "../api";
@@ -31,8 +30,6 @@ export function badgeLabel(source: FileSource): string {
   }
   return "読取済";
 }
-
-export { isPending };
 
 /**
  * Reads one picked file. The caller drops the row if the badge was removed,
