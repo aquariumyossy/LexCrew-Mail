@@ -1,6 +1,6 @@
 {
   "name": "kuru",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Outlook クラシックの作業ウィンドウからローカル LLM と Argos でメールを下書きする",
   "scripts": {
