@@ -1,5 +1,5 @@
 import path from "path";
-import express, { Express, Request, Response } from "express";
+import express, { Express, Response } from "express";
 import { clampTimeoutMs, DEFAULT_ARGOS_BASE_URL, DEFAULT_MODEL, DEFAULT_TIMEOUT_MS, OCR_BODY_LIMIT_BYTES } from "../shared/constants";
 import { ThinkingLevel } from "../shared/thinking";
 import { visionUnsupportedMessage } from "../shared/ocr";
@@ -327,8 +327,4 @@ async function probeArgos(baseUrl: string, apiKey: string): Promise<{ ok: boolea
   } catch (error) {
     return { ok: false, error: textError(error) };
   }
-}
-
-export function notFound(_req: Request, res: Response): void {
-  res.status(404).json({ error: "見つかりません。" });
 }
