@@ -1,4 +1,4 @@
-import { eventChipLabel, parseEventQuery, EventQuery } from "./calendarEvents";
+import { EVENT_PRESETS, eventChipLabel, parseEventQuery, EventQuery } from "./calendarEvents";
 import { MAX_TOOL_ROUNDS } from "./constants";
 
 export const TOOL_GET_OPEN_ITEM = "get_open_item";
@@ -43,7 +43,7 @@ const eventParams = {
   properties: {
     preset: {
       type: "string",
-      enum: ["today", "tomorrow", "this_week", "next_week"],
+      enum: [...EVENT_PRESETS],
       description: "今日、明日、今週、来週。日付より優先する。空なら今日。週は月曜に始まる。",
     },
     from: { type: "string", description: "YYYY-MM-DD。to と組む。両端を含む。31日まで。" },
