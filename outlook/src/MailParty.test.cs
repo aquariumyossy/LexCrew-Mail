@@ -13,8 +13,6 @@ class MailPartyTest
         Expect(MailParty.PersonName("taro@example.com", "山田太郎"), "山田太郎");
         Expect(MailParty.PersonName("", null), "");
         Expect(MailParty.PersonName("「鈴木」 <s@example.com>"), "鈴木");
-        Expect(MailParty.SmtpAddress("/O=ORG/CN=YAMADA", "Yamada@A.example"), "yamada@a.example");
-        Expect(MailParty.SmtpAddress(null, "", "山田"), "");
         return 0;
     }
 

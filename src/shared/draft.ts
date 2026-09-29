@@ -87,25 +87,3 @@ export function decideApply(mode: HostMode): { ok: true } | { ok: false; error: 
   }
   return { ok: false, error: "予定は本文を書きません。" };
 }
-
-type ItemShape = {
-  itemType?: string;
-  body?: { setAsync?: unknown };
-  displayReplyForm?: unknown;
-};
-
-export function hostModeFromItem(item: ItemShape | null | undefined): HostMode {
-  if (!item) {
-    return "none";
-  }
-  if (item.itemType && item.itemType !== "message") {
-    return "not-message";
-  }
-  if (typeof item.displayReplyForm === "function") {
-    return "read";
-  }
-  if (item.body && typeof item.body.setAsync === "function") {
-    return "compose";
-  }
-  return "none";
-}

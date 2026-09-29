@@ -22,29 +22,6 @@ namespace KuruOutlook
             return "";
         }
 
-        public static string SmtpAddress(params string[] candidates)
-        {
-            if (candidates == null)
-            {
-                return "";
-            }
-            for (int i = 0; i < candidates.Length; i++)
-            {
-                string value = candidates[i];
-                if (string.IsNullOrWhiteSpace(value))
-                {
-                    continue;
-                }
-                string text = value.Trim();
-                if (text.IndexOf('@') < 0 || text.StartsWith("/"))
-                {
-                    continue;
-                }
-                return text.ToLowerInvariant();
-            }
-            return "";
-        }
-
         public static string Clean(string value)
         {
             if (string.IsNullOrWhiteSpace(value))

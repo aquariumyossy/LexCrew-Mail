@@ -3,6 +3,8 @@ dist
 release
 *.log
 sidecar.err
+.tmp_exports.csv
 outlook/packages/
 outlook/nuget.exe
+outlook/bin/
 installer/lexcrew.ico

@@ -1,4 +1,4 @@
-import { decideApply, hostModeFromItem, parseMailDraft } from "./draft";
+import { decideApply, parseMailDraft } from "./draft";
 import { indexHitsForModel, mapArgosHits, searchPrefixes, trimHitsForModel } from "./argos";
 import { fitContext } from "./context";
 import { clampTimeoutMs, DEFAULT_THINKING_BUDGET, MIN_THINKING_BUDGET } from "./constants";
@@ -17,15 +17,6 @@ describe("decideApply", () => {
     });
     expect(decideApply("none").ok).toBe(false);
     expect(decideApply("not-message").ok).toBe(false);
-  });
-});
-
-describe("hostModeFromItem", () => {
-  it("treats displayReplyForm as read and setAsync as compose", () => {
-    expect(hostModeFromItem(null)).toBe("none");
-    expect(hostModeFromItem({ itemType: "appointment", body: { setAsync() {} } })).toBe("not-message");
-    expect(hostModeFromItem({ itemType: "message", displayReplyForm() {} })).toBe("read");
-    expect(hostModeFromItem({ itemType: "message", body: { setAsync() {} } })).toBe("compose");
   });
 });
 
