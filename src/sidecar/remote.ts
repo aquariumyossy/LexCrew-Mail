@@ -1,5 +1,7 @@
+import { DEFAULT_ARGOS_BASE_URL } from "../shared/constants";
+
 export function normalizeBase(baseUrl: string): string {
-  const trimmed = (baseUrl || "http://127.0.0.1:17890").trim().replace(/\/+$/, "");
+  const trimmed = (baseUrl || DEFAULT_ARGOS_BASE_URL).trim().replace(/\/+$/, "");
   const url = new URL(trimmed);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("Argos の URL は http または https にしてください。");

@@ -12,7 +12,7 @@ import { foreignCharNoticeForAssistant } from "../shared/japaneseHan";
 import { COOLDOWN_MINUTES, SLOT_MINUTES } from "../shared/freeSlots";
 import { REPLY_SHORTCUTS, ReplyShortcutId, replyShortcutLabel, shortcutInstruction } from "../shared/replies";
 import { TOOL_FIND_FREE_SLOTS, TOOL_LIST_EVENTS, TOOL_SEARCH, TOOL_SEARCH_INDEX, TOOL_SEARCH_SENT, ToolCall, TOOL_ROUND_PRESETS, describeToolCall, toolRoundPresetLabel } from "../shared/tools";
-import { MAX_ATTACHED_FILES, MAX_TIMEOUT_MS, clampTimeoutMs } from "../shared/constants";
+import { DEFAULT_ARGOS_BASE_URL, MAX_ATTACHED_FILES, MAX_TIMEOUT_MS, clampTimeoutMs } from "../shared/constants";
 import {
   ACCEPTED_EXTENSIONS,
   CommittedFile,
@@ -930,7 +930,7 @@ export function mount(root: HTMLElement): void {
       ["llmApiKey", "APIキー", "mtplx の API キー"],
       ["model", "モデル", ""],
       ["searxngUrl", "SearXNG URL", "http://192.168.x.x:8080"],
-      ["argosBaseUrl", "Argos URL", "http://127.0.0.1:17890"],
+      ["argosBaseUrl", "Argos URL", DEFAULT_ARGOS_BASE_URL],
       ["argosApiKey", "Argos API キー", "任意"],
     ];
     const inputs = new Map<TextSetting, HTMLInputElement>();
