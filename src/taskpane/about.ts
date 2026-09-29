@@ -79,5 +79,5 @@ export const aboutCopy = {
       choice: "BSD-3-Clause または GPL-2.0。本アプリは BSD-3-Clause。",
     },
   ] satisfies LibraryNotice[],
-  credit: "半蔵門総合法律事務所　弁護士𠮷田秀平",
+  credit: "弁護士　吉田秀平",
 };

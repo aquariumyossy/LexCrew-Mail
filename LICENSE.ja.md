@@ -6,7 +6,7 @@
 
 ---
 
-Copyright (c) 2026 aquariumyossy
+Copyright (c) 2026 弁護士 吉田秀平
 
 ## 同意
 

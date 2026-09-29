@@ -36,8 +36,7 @@ describe("aboutCopy", () => {
     ]);
   });
 
-  it("credits 𠮷田秀平", () => {
-    expect(aboutCopy.credit).toBe("半蔵門総合法律事務所　弁護士𠮷田秀平");
-    expect(aboutCopy.credit).toContain("\u{20BB7}");
+  it("credits the developer", () => {
+    expect(aboutCopy.credit).toBe("弁護士　吉田秀平");
   });
 });

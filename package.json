@@ -2,6 +2,7 @@
   "name": "kuru",
   "version": "1.0.0",
   "private": true,
+  "author": "弁護士　吉田秀平",
   "license": "Elastic-2.0",
   "description": "Outlook クラシックの作業ウィンドウからローカル LLM と Argos でメールを下書きする",
   "scripts": {
