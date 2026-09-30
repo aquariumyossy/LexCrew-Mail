@@ -11,8 +11,8 @@ export type Citation = {
 
 export type MailDraft = {
   subject: string;
-  to: string[];
-  cc: string[];
+  to?: string[];
+  cc?: string[];
   bodyHtml: string;
   citations: Citation[];
 };
@@ -41,16 +41,22 @@ export function parseMailDraft(value: unknown): { ok: true; draft: MailDraft } |
   const citations = Array.isArray(row.citations)
     ? row.citations.map(parseCitation).filter((item): item is Citation => item !== null)
     : [];
-  return {
-    ok: true,
-    draft: {
-      subject: typeof row.subject === "string" ? row.subject : "",
-      to: asStringList(row.to),
-      cc: asStringList(row.cc),
-      bodyHtml: row.bodyHtml,
-      citations,
-    },
+  const draft: MailDraft = {
+    subject: typeof row.subject === "string" ? row.subject : "",
+    bodyHtml: row.bodyHtml,
+    citations,
   };
+  const to = presentAddressList(row.to);
+  const cc = presentAddressList(row.cc);
+  if (to !== undefined) draft.to = to;
+  if (cc !== undefined) draft.cc = cc;
+  return { ok: true, draft };
+}
+
+/** 配列があるときだけ欄を書き換える。空配列は欄を空にする。無いときは欄を残す。 */
+function presentAddressList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return asStringList(value);
 }
 
 function parseCitation(value: unknown): Citation | null {

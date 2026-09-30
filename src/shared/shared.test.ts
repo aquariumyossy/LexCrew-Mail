@@ -2,10 +2,10 @@ import { decideApply, parseMailDraft } from "./draft";
 import { indexHitsForModel, mapArgosHits, searchPrefixes, trimHitsForModel } from "./argos";
 import { fitContext } from "./context";
 import { clampTimeoutMs, DEFAULT_THINKING_BUDGET, MIN_THINKING_BUDGET } from "./constants";
-import { systemPrompt } from "./prompts";
+import { renderMailHeader, systemPrompt } from "./prompts";
 import { normalizeThinkingLevel, thinkingFields } from "./thinking";
 import { findFreeSlots, normalizeSlotQuery, parseLocal } from "./freeSlots";
-import { replyShortcutLabel, shortcutInstruction } from "./replies";
+import { REPLY_SHORTCUTS, replyShortcutLabel, shortcutInstruction } from "./replies";
 import { normalizeMaxToolRounds, parseToolCall, TOOL_APPLY_DRAFT, TOOL_FIND_FREE_SLOTS, TOOL_LIST_EVENTS, TOOL_SEARCH_SENT, buildTools, describeToolCall, toolRoundLimitNotice, toolRoundPresetLabel, UNLIMITED_TOOL_ROUNDS } from "./tools";
 
 describe("parseLocal", () => {
@@ -45,7 +45,17 @@ describe("parseMailDraft", () => {
     expect(parsed.ok).toBe(true);
     if (parsed.ok) {
       expect(parsed.draft.to).toEqual(["a@example.com"]);
+      expect(parsed.draft.cc).toBeUndefined();
       expect(parsed.draft.citations[0].mailFrom).toBe("山田");
+    }
+  });
+
+  it("keeps an empty cc so the field can be cleared", () => {
+    const parsed = parseMailDraft({ bodyHtml: "<p>本文</p>", cc: [] });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.draft.to).toBeUndefined();
+      expect(parsed.draft.cc).toEqual([]);
     }
   });
 });
@@ -151,6 +161,34 @@ describe("systemPrompt", () => {
     const all = systemPrompt({ searxng: true, argos: true });
     expect(all).toContain("出典にできるのは search、search_index、search_sent のヒットと、list_events の件名と場所だけである。");
     expect(all).toContain("search_index のメールヒットは差出人、日付、フォルダを落とさない。");
+  });
+
+  it("puts the open mail ahead of memory", () => {
+    const mail = renderMailHeader({
+      subject: "件名",
+      from: "山田 太郎 <taro@example.com>",
+      to: ["hanako@example.com"],
+      cc: ["鈴木 <s@example.com>", "cc@example.com"],
+    });
+    const text = systemPrompt({ mail, memory: "## 共通コンテキスト\n前提" });
+    expect(text.indexOf("## 開いているメール")).toBeLessThan(text.indexOf("## 共通コンテキスト"));
+    expect(text).toContain("宛先: hanako@example.com");
+    expect(text).toContain("CC: 鈴木 <s@example.com>、cc@example.com");
+    expect(text).toContain("apply_draft の to と cc を省略する");
+    expect(text).toContain("空の配列を渡すとその欄を空にする");
+    expect(systemPrompt()).not.toContain("## 開いているメール");
+  });
+});
+
+describe("renderMailHeader", () => {
+  it("keeps a bare address and marks an empty field", () => {
+    const text = renderMailHeader({ subject: " ", from: "", to: [], cc: ["  "] });
+    expect(text).toContain("件名: （なし）");
+    expect(text).toContain("差出人: （なし）");
+    expect(text).toContain("宛先: （なし）");
+    expect(text).toContain("CC: （なし）");
+    expect(text).toContain("引用の中の宛先は、元のメールのものである");
+    expect(renderMailHeader(null)).toBe("");
   });
 });
 
@@ -270,9 +308,16 @@ describe("parseToolCall", () => {
     const tools = buildTools({ searxng: false, argos: false });
     const list = tools.find((tool) => tool.function.name === TOOL_LIST_EVENTS);
     const free = tools.find((tool) => tool.function.name === TOOL_FIND_FREE_SLOTS);
+    const open = tools.find((tool) => tool.function.name === "get_open_item");
+    const apply = tools.find((tool) => tool.function.name === TOOL_APPLY_DRAFT);
+    expect(open?.function.description).toContain("差出人");
+    expect(open?.function.description).toContain("CC");
+    expect(apply?.function.description).toContain("to と cc を省略する");
+    expect(apply?.function.description).toContain("空の配列を渡すとその欄を空にする");
     expect(list?.function.description).toContain("q を空");
     expect(list?.function.description).toContain("find_free_slots");
     expect(free?.function.description).toContain("件名は含まれない");
+    expect(free?.function.description).toContain("探す日数");
     const today = parseToolCall({ id: "6", type: "function", function: { name: TOOL_LIST_EVENTS, arguments: "{}" } });
     expect(today.ok && today.tool.name === TOOL_LIST_EVENTS && today.tool.query).toEqual({ kind: "preset", preset: "today", q: "" });
     const week = parseToolCall({
@@ -320,6 +365,7 @@ describe("normalizeSlotQuery", () => {
       cooldownMinutes: 0,
       fromTomorrow: true,
       fromDayAfter: true,
+      horizonDays: 14,
     });
     expect(normalizeSlotQuery({ dayStart: "18:00", dayEnd: "09:00", slotMinutes: 45, maxSlots: 40, cooldownMinutes: 10 })).toMatchObject({
       dayStart: "09:00",
@@ -328,6 +374,9 @@ describe("normalizeSlotQuery", () => {
       maxSlots: 10,
       cooldownMinutes: 0,
     });
+    expect(normalizeSlotQuery({ horizonDays: Number.NaN }).horizonDays).toBe(14);
+    expect(normalizeSlotQuery({ horizonDays: 6 }).horizonDays).toBe(7);
+    expect(normalizeSlotQuery({ horizonDays: 90 }).horizonDays).toBe(60);
   });
 });
 
@@ -405,6 +454,21 @@ describe("findFreeSlots", () => {
     expect(found.slots).toEqual([]);
     expect(found.note).toContain("曜日");
   });
+
+  it("reaches a slot 20 days out only when the horizon is long enough", () => {
+    const start = new Date(2026, 8, 1, 8, 0, 0, 0);
+    const base = {
+      ...normalizeSlotQuery(null),
+      fromTomorrow: false,
+      fromDayAfter: false,
+      excludedWeekdays: [0, 2, 3, 4, 5, 6],
+      maxSlots: 10,
+    };
+    const short = findFreeSlots(start, [], { ...base, horizonDays: 14 });
+    expect(short.slots.some((slot) => slot.start.startsWith("2026-09-21"))).toBe(false);
+    const long = findFreeSlots(start, [], { ...base, horizonDays: 28 });
+    expect(long.slots.some((slot) => slot.start.startsWith("2026-09-21"))).toBe(true);
+  });
 });
 
 describe("shortcutInstruction", () => {
@@ -422,5 +486,26 @@ describe("shortcutInstruction", () => {
     });
     expect(unread).toContain("予定表は読んでいません。候補は対応時間だけです。");
     expect(unread).toContain("2026-09-28T09:00");
+  });
+
+  it("translates the open body in chat and the preface while composing", () => {
+    const toJa = shortcutInstruction("toJa");
+    expect(toJa.split("\n")[0]).toBe("開いているメールの英文を日本語に訳して。");
+    expect(replyShortcutLabel(toJa)).toBe("開いているメールの英文を日本語に訳して。");
+    expect(toJa).toContain("閲覧中は本文全体を日本語に訳し、チャットに出す。apply_draft はしない。");
+    expect(toJa).toContain("作成中とインライン返信は、署名と引用より前の前文だけを日本語に訳し、apply_draft する。");
+    expect(toJa).toContain("件名、宛先、CC は変えない");
+    expect(toJa).toContain("作成中は、前文が空、またはすでに日本語なら、apply_draft せずチャットでその旨を伝える。");
+    expect(toJa).not.toContain("以外の日時は書かない");
+    expect(REPLY_SHORTCUTS.find((item) => item.id === "toJa")?.label).toBe("邦訳");
+
+    const toEn = shortcutInstruction("toEn");
+    expect(toEn.split("\n")[0]).toBe("開いているメールの日本語を英語に訳して。");
+    expect(replyShortcutLabel(toEn)).toBe("開いているメールの日本語を英語に訳して。");
+    expect(toEn).toContain("閲覧中は本文全体を英語に訳し、チャットに出す。apply_draft はしない。");
+    expect(toEn).toContain("前文だけを英語に訳し、apply_draft する。");
+    expect(toEn).toContain("件名、宛先、CC は変えない");
+    expect(toEn).not.toContain("以外の日時は書かない");
+    expect(REPLY_SHORTCUTS.find((item) => item.id === "toEn")?.label).toBe("英訳");
   });
 });

@@ -1,6 +1,8 @@
 export const SLOT_MINUTES = [30, 60, 90, 120] as const;
 export const COOLDOWN_MINUTES = [0, 15, 30] as const;
 export const HORIZON_DAYS = 14;
+export const MIN_HORIZON_DAYS = 7;
+export const MAX_HORIZON_DAYS = 60;
 export const DEFAULT_EXCLUDED_WEEKDAYS = [0, 6];
 export const DEFAULT_DAY_START = "09:00";
 export const DEFAULT_DAY_END = "18:00";
@@ -20,6 +22,7 @@ export type SlotQuery = {
   cooldownMinutes: CooldownMinutes;
   fromTomorrow: boolean;
   fromDayAfter: boolean;
+  horizonDays: number;
 };
 
 export type Appointment = {
@@ -48,6 +51,7 @@ export function defaultSlotQuery(): SlotQuery {
     cooldownMinutes: DEFAULT_COOLDOWN_MINUTES,
     fromTomorrow: true,
     fromDayAfter: true,
+    horizonDays: HORIZON_DAYS,
   };
 }
 
@@ -71,12 +75,13 @@ export function normalizeSlotQuery(value: Partial<SlotQuery> | null | undefined)
     cooldownMinutes: oneOf(COOLDOWN_MINUTES, row.cooldownMinutes, base.cooldownMinutes),
     fromTomorrow: flag(row.fromTomorrow, base.fromTomorrow),
     fromDayAfter: flag(row.fromDayAfter, base.fromDayAfter),
+    horizonDays: clampHorizon(row.horizonDays, base.horizonDays),
   };
 }
 
-export function slotWindow(now: Date): { from: Date; to: Date } {
+export function slotWindow(now: Date, horizonDays: number = HORIZON_DAYS): { from: Date; to: Date } {
   const from = startOfDay(now);
-  return { from, to: addDays(from, HORIZON_DAYS) };
+  return { from, to: addDays(from, clampHorizon(horizonDays, HORIZON_DAYS)) };
 }
 
 export function formatLocal(date: Date): string {
@@ -94,11 +99,11 @@ export function findFreeSlots(now: Date, appointments: Appointment[], raw: Parti
   if (query.slotMinutes > close - open) {
     return { slots: [], note: "枠の長さが対応時間に収まりません。" };
   }
-  const window = slotWindow(now);
+  const window = slotWindow(now, query.horizonDays);
   const blocks = busyBlocks(appointments, query.cooldownMinutes);
   const byDay = new Map<string, Array<{ start: Date; end: Date }>>();
-  const lead = firstOpenDay(window.from, query.excludedWeekdays, query.fromDayAfter ? 2 : query.fromTomorrow ? 1 : 0);
-  for (let i = lead; i < HORIZON_DAYS; i += 1) {
+  const lead = firstOpenDay(window.from, query.excludedWeekdays, query.fromDayAfter ? 2 : query.fromTomorrow ? 1 : 0, query.horizonDays);
+  for (let i = lead; i < query.horizonDays; i += 1) {
     const day = addDays(window.from, i);
     if (query.excludedWeekdays.includes(day.getDay())) continue;
     const dayStart = atMinutes(day, open);
@@ -125,15 +130,15 @@ export function findFreeSlots(now: Date, appointments: Appointment[], raw: Parti
   };
 }
 
-function firstOpenDay(today: Date, excluded: number[], count: number): number {
+function firstOpenDay(today: Date, excluded: number[], count: number, horizonDays: number): number {
   if (count <= 0) return 0;
   let seen = 0;
-  for (let i = 1; i < HORIZON_DAYS; i += 1) {
+  for (let i = 1; i < horizonDays; i += 1) {
     if (excluded.includes(addDays(today, i).getDay())) continue;
     seen += 1;
     if (seen === count) return i;
   }
-  return HORIZON_DAYS;
+  return horizonDays;
 }
 
 function mergeRuns(slots: Array<{ start: Date; end: Date }>): Array<{ start: Date; end: Date }> {
@@ -241,6 +246,12 @@ function clampCount(value: unknown, fallback: number): number {
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(10, Math.max(1, Math.round(n)));
+}
+
+function clampHorizon(value: unknown, fallback: number): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(MAX_HORIZON_DAYS, Math.max(MIN_HORIZON_DAYS, Math.round(n)));
 }
 
 function uniqueWeekdays(values: unknown[]): number[] {

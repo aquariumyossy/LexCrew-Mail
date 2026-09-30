@@ -5,11 +5,28 @@ export const REPLY_SHORTCUTS = [
   { id: "accept", label: "承諾", lead: "承諾の返信を書いて。" },
   { id: "decline", label: "お断り", lead: "お断りの返信を書いて。" },
   { id: "schedule", label: "日程調整", lead: "日程調整の返信を書いて。" },
+  { id: "toJa", label: "邦訳", lead: "開いているメールの英文を日本語に訳して。" },
+  { id: "toEn", label: "英訳", lead: "開いているメールの日本語を英語に訳して。" },
 ] as const;
 
 export type ReplyShortcutId = (typeof REPLY_SHORTCUTS)[number]["id"];
 
 const KEEP = ["件名、宛先、CC は変えない。本文だけを書く。", "署名と、その下の引用は残す。", "送信はしない。"].join("\n");
+
+function translateInstruction(lead: string, into: string): string {
+  return [
+    lead,
+    "get_open_item で本文を読む。",
+    `閲覧中は本文全体を${into}に訳し、チャットに出す。apply_draft はしない。`,
+    `作成中とインライン返信は、署名と引用より前の前文だけを${into}に訳し、apply_draft する。`,
+    "訳文に署名と引用は含めない。",
+    "要約しない。説明を本文に足さない。",
+    "固有名詞、日付、数値、段落の区切りは残す。",
+    "search_sent、search、search_index、find_free_slots、list_events は使わない。",
+    `作成中は、前文が空、またはすでに${into}なら、apply_draft せずチャットでその旨を伝える。`,
+    KEEP,
+  ].join("\n");
+}
 
 export function shortcutInstruction(id: ReplyShortcutId, slots?: { slots: FreeSlot[]; note: string }): string {
   const shortcut = REPLY_SHORTCUTS.find((item) => item.id === id);
@@ -44,6 +61,10 @@ export function shortcutInstruction(id: ReplyShortcutId, slots?: { slots: FreeSl
       KEEP,
     ].join("\n");
   }
+  if (id === "toJa" || id === "toEn") {
+    return translateInstruction(shortcut.lead, id === "toJa" ? "日本語" : "英語");
+  }
+  if (id !== "schedule") return "";
   const lines = slots?.slots.length
     ? slots.slots.map((slot) => `- ${slot.start} から ${slot.end}`)
     : ["- （なし）"];

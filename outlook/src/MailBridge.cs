@@ -65,12 +65,16 @@ namespace KuruOutlook
                     return "{\"error\":\"予定は本文を書きません。\"}";
                 }
                 string html = SafeString(() => item.HTMLBody);
+                string from;
+                string[] to;
+                string[] cc;
+                FillHeaderLists(item, out from, out to, out cc);
                 var payload = new System.Collections.Generic.Dictionary<string, object>
                 {
                     { "subject", SafeString(() => item.Subject) },
-                    { "from", SenderLabel(item) },
-                    { "to", PartyNames(item, 1, SafeString(() => item.To)) },
-                    { "cc", PartyNames(item, 2, SafeString(() => item.CC)) },
+                    { "from", from },
+                    { "to", to },
+                    { "cc", cc },
                     { "bodyHtml", MailBody.VisibleText(html) },
                     { "citations", new object[0] }
                 };
@@ -79,6 +83,42 @@ namespace KuruOutlook
             catch (Exception ex)
             {
                 return "{\"error\":\"" + Json(ex.Message) + "\"}";
+            }
+        }
+
+        public string ReadHeader()
+        {
+            try
+            {
+                bool inspector;
+                dynamic item = MailTarget.Draft(_window, out inspector);
+                if (item == null)
+                {
+                    return "{\"ok\":false}";
+                }
+                string messageClass = Convert.ToString(item.MessageClass);
+                string mode = MailGate.Mode(inspector, messageClass, SafeSent(item));
+                if (mode == "none" || mode == "not-message")
+                {
+                    return "{\"ok\":false}";
+                }
+                string from;
+                string[] to;
+                string[] cc;
+                FillHeaderLists(item, out from, out to, out cc);
+                var payload = new System.Collections.Generic.Dictionary<string, object>
+                {
+                    { "ok", true },
+                    { "subject", SafeString(() => item.Subject) },
+                    { "from", from },
+                    { "to", to },
+                    { "cc", cc }
+                };
+                return new JavaScriptSerializer().Serialize(payload);
+            }
+            catch
+            {
+                return "{\"ok\":false}";
             }
         }
 
@@ -263,16 +303,8 @@ namespace KuruOutlook
                 {
                     item.Subject = subject;
                 }
-                string to = JoinAddresses(draft, "to");
-                if (!string.IsNullOrEmpty(to))
-                {
-                    item.To = to;
-                }
-                string cc = JoinAddresses(draft, "cc");
-                if (!string.IsNullOrEmpty(cc))
-                {
-                    item.CC = cc;
-                }
+                SetAddressField(item, draft, "to", 1);
+                SetAddressField(item, draft, "cc", 2);
                 return "作成ウィンドウへ書き戻しました。";
             }
             catch (Exception ex)
@@ -873,52 +905,96 @@ namespace KuruOutlook
             );
         }
 
-        static string[] PartyNames(dynamic item, int type, string fallback)
+        static void FillHeaderLists(dynamic item, out string from, out string[] to, out string[] cc)
         {
-            var found = new System.Collections.Generic.List<string>();
+            from = MailParty.PartyLabel(SenderLabel(item), SenderSmtp(item));
+            var toList = new System.Collections.Generic.List<string>();
+            var ccList = new System.Collections.Generic.List<string>();
+            CollectHeaderParties(item, toList, ccList);
+            to = MailParty.CapParties(toList);
+            cc = MailParty.CapParties(ccList);
+        }
+
+        static void CollectHeaderParties(
+            dynamic item,
+            System.Collections.Generic.List<string> to,
+            System.Collections.Generic.List<string> cc)
+        {
             try
             {
                 dynamic recipients = item.Recipients;
-                int count = recipients == null ? 0 : System.Convert.ToInt32(recipients.Count);
+                int count = recipients == null ? 0 : Convert.ToInt32(recipients.Count);
                 for (int i = 1; i <= count; i++)
                 {
-                    dynamic recipient = recipients[i];
-                    int kind = 0;
                     try
                     {
-                        kind = System.Convert.ToInt32(recipient.Type);
+                        dynamic recipient = recipients[i];
+                        int kind = 0;
+                        try
+                        {
+                            kind = Convert.ToInt32(recipient.Type);
+                        }
+                        catch
+                        {
+                        }
+                        if (kind == 3)
+                        {
+                            continue;
+                        }
+                        string rawName = SafeString(() => Convert.ToString(recipient.Name));
+                        string rawAddress = SafeString(() => Convert.ToString(recipient.Address));
+                        string smtp = RecipientSmtp(recipient);
+                        if (smtp.Length == 0)
+                        {
+                            smtp = rawAddress;
+                        }
+                        string label = MailParty.PartyLabel(rawName.Length > 0 ? rawName : rawAddress, smtp);
+                        AddUnique(kind == 2 ? cc : to, label);
                     }
                     catch
                     {
-                    }
-                    if (kind != type)
-                    {
-                        continue;
-                    }
-                    string name = MailParty.PersonName(SafeString(() => recipient.Name), SafeString(() => recipient.Address));
-                    if (name.Length > 0 && !found.Contains(name))
-                    {
-                        found.Add(name);
                     }
                 }
             }
             catch
             {
             }
-            if (found.Count > 0)
+            if (to.Count == 0)
             {
-                return found.ToArray();
+                AddDisplayFallback(to, item, true);
             }
-            string[] parts = SplitAddresses(fallback);
-            for (int i = 0; i < parts.Length; i++)
+            if (cc.Count == 0)
             {
-                string name = MailParty.PersonName(parts[i]);
-                if (name.Length > 0 && !found.Contains(name))
-                {
-                    found.Add(name);
-                }
+                AddDisplayFallback(cc, item, false);
             }
-            return found.ToArray();
+        }
+
+        static void AddDisplayFallback(System.Collections.Generic.List<string> into, dynamic item, bool toField)
+        {
+            string fallback = toField ? SafeString(() => item.To) : SafeString(() => item.CC);
+            string[] labels = MailParty.LabelsFromDisplayList(fallback);
+            if (labels.Length == 0)
+            {
+                labels = MailParty.LabelsFromDisplayList(MapiString(
+                    item,
+                    toField
+                        ? "http://schemas.microsoft.com/mapi/proptag/0x0E04001F"
+                        : "http://schemas.microsoft.com/mapi/proptag/0x0E03001F"
+                ));
+            }
+            for (int i = 0; i < labels.Length; i++)
+            {
+                AddUnique(into, labels[i]);
+            }
+        }
+
+        static void AddUnique(System.Collections.Generic.List<string> into, string label)
+        {
+            if (label.Length == 0 || into.Contains(label))
+            {
+                return;
+            }
+            into.Add(label);
         }
 
         static string MapiString(dynamic item, string tag)
@@ -963,37 +1039,79 @@ namespace KuruOutlook
             }
         }
 
-        static string[] SplitAddresses(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return new string[0];
-            }
-            string[] parts = value.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-            for (int i = 0; i < parts.Length; i++)
-            {
-                parts[i] = parts[i].Trim();
-            }
-            return parts;
-        }
-
-        static string JoinAddresses(System.Collections.Generic.Dictionary<string, object> draft, string key)
+        static void SetAddressField(dynamic item, System.Collections.Generic.Dictionary<string, object> draft, string key, int type)
         {
             if (!draft.ContainsKey(key) || draft[key] == null)
             {
-                return "";
+                return;
             }
             var list = draft[key] as System.Collections.ArrayList;
-            if (list == null || list.Count == 0)
+            if (list == null)
             {
-                return "";
+                return;
+            }
+            if (list.Count == 0)
+            {
+                ClearAddressField(item, type);
+                return;
             }
             string[] parts = new string[list.Count];
             for (int i = 0; i < list.Count; i++)
             {
                 parts[i] = Convert.ToString(list[i]);
             }
-            return string.Join("; ", parts);
+            string joined = string.Join("; ", parts);
+            if (type == 2)
+            {
+                item.CC = joined;
+            }
+            else
+            {
+                item.To = joined;
+            }
+        }
+
+        static void ClearAddressField(dynamic item, int type)
+        {
+            try
+            {
+                dynamic recipients = item.Recipients;
+                int count = recipients == null ? 0 : Convert.ToInt32(recipients.Count);
+                for (int i = count; i >= 1; i--)
+                {
+                    try
+                    {
+                        dynamic recipient = recipients[i];
+                        int kind = 1;
+                        try
+                        {
+                            kind = Convert.ToInt32(recipient.Type);
+                        }
+                        catch
+                        {
+                        }
+                        bool drop = type == 2 ? kind == 2 : kind != 2 && kind != 3;
+                        if (drop)
+                        {
+                            recipient.Delete();
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
+            if (type == 2)
+            {
+                item.CC = "";
+            }
+            else
+            {
+                item.To = "";
+            }
         }
 
         static string ContentId(dynamic attachment)

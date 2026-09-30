@@ -49,6 +49,7 @@ export type Settings = {
   cooldownMinutes: SlotQuery["cooldownMinutes"];
   slotFromTomorrow: boolean;
   slotFromDayAfter: boolean;
+  slotHorizonDays: number;
   calendarOutlook: boolean;
   calendarGoogle: boolean;
   googleIcalUrl: string;
@@ -119,7 +120,7 @@ export function loadSettings(): Settings {
   }
 }
 
-function slotDefaults(): Pick<Settings, "excludedWeekdays" | "slotDayStart" | "slotDayEnd" | "slotMinutes" | "maxSlots" | "cooldownMinutes" | "slotFromTomorrow" | "slotFromDayAfter"> {
+function slotDefaults(): Pick<Settings, "excludedWeekdays" | "slotDayStart" | "slotDayEnd" | "slotMinutes" | "maxSlots" | "cooldownMinutes" | "slotFromTomorrow" | "slotFromDayAfter" | "slotHorizonDays"> {
   const query = normalizeSlotQuery(null);
   return {
     excludedWeekdays: query.excludedWeekdays,
@@ -130,6 +131,7 @@ function slotDefaults(): Pick<Settings, "excludedWeekdays" | "slotDayStart" | "s
     cooldownMinutes: query.cooldownMinutes,
     slotFromTomorrow: query.fromTomorrow,
     slotFromDayAfter: query.fromDayAfter,
+    slotHorizonDays: query.horizonDays,
   };
 }
 
@@ -151,7 +153,7 @@ export function normalizeCalendarSource(parsed: Partial<Pick<Settings, "calendar
   };
 }
 
-export function slotQueryFromSettings(settings: Pick<Settings, "excludedWeekdays" | "slotDayStart" | "slotDayEnd" | "slotMinutes" | "maxSlots" | "cooldownMinutes" | "slotFromTomorrow" | "slotFromDayAfter">): SlotQuery {
+export function slotQueryFromSettings(settings: Pick<Settings, "excludedWeekdays" | "slotDayStart" | "slotDayEnd" | "slotMinutes" | "maxSlots" | "cooldownMinutes" | "slotFromTomorrow" | "slotFromDayAfter" | "slotHorizonDays">): SlotQuery {
   return normalizeSlotQuery({
     excludedWeekdays: settings.excludedWeekdays,
     dayStart: settings.slotDayStart,
@@ -161,6 +163,7 @@ export function slotQueryFromSettings(settings: Pick<Settings, "excludedWeekdays
     cooldownMinutes: settings.cooldownMinutes,
     fromTomorrow: settings.slotFromTomorrow,
     fromDayAfter: settings.slotFromDayAfter,
+    horizonDays: settings.slotHorizonDays,
   });
 }
 
@@ -174,6 +177,7 @@ function slotFields(parsed: Partial<Settings>): ReturnType<typeof slotDefaults> 
     cooldownMinutes: parsed.cooldownMinutes,
     fromTomorrow: parsed.slotFromTomorrow,
     fromDayAfter: parsed.slotFromDayAfter,
+    horizonDays: parsed.slotHorizonDays,
   });
   return {
     excludedWeekdays: query.excludedWeekdays,
@@ -184,6 +188,7 @@ function slotFields(parsed: Partial<Settings>): ReturnType<typeof slotDefaults> 
     cooldownMinutes: query.cooldownMinutes,
     slotFromTomorrow: query.fromTomorrow,
     slotFromDayAfter: query.fromDayAfter,
+    slotHorizonDays: query.horizonDays,
   };
 }
 

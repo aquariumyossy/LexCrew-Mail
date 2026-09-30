@@ -9,7 +9,7 @@ import {
   searchPrefixes,
 } from "../shared/argos";
 import { foreignCharNoticeForAssistant } from "../shared/japaneseHan";
-import { COOLDOWN_MINUTES, SLOT_MINUTES } from "../shared/freeSlots";
+import { COOLDOWN_MINUTES, MAX_HORIZON_DAYS, MIN_HORIZON_DAYS, SLOT_MINUTES } from "../shared/freeSlots";
 import { REPLY_SHORTCUTS, ReplyShortcutId, replyShortcutLabel, shortcutInstruction } from "../shared/replies";
 import { TOOL_FIND_FREE_SLOTS, TOOL_LIST_EVENTS, TOOL_SEARCH, TOOL_SEARCH_INDEX, TOOL_SEARCH_SENT, ToolCall, TOOL_ROUND_PRESETS, describeToolCall, toolRoundPresetLabel } from "../shared/tools";
 import { DEFAULT_ARGOS_BASE_URL, MAX_ATTACHED_FILES, MAX_TIMEOUT_MS, clampTimeoutMs } from "../shared/constants";
@@ -34,10 +34,10 @@ import { THINKING_LEVELS, THINKING_LEVEL_LABELS } from "../shared/thinking";
 import { MAIL_FONTS, MAIL_FONT_SIZE_MAX, MAIL_FONT_SIZE_MIN, MAIL_FONT_SIZE_STEP, mailFontSizeFromInput, normalizeMailFontId } from "../shared/mailFont";
 import { countOutgoingTokens } from "../shared/meter";
 import { Memory, Party, renderMemorySection } from "../shared/memory";
-import { systemPrompt } from "../shared/prompts";
+import { renderMailHeader, systemPrompt } from "../shared/prompts";
 import { ScopeRow, Settings, TextSetting, UiFontSize, adoptStoredConnection, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
 import { badgeLabel, ingestBytes, ingestFile, readErrorMessage } from "./files/attach";
-import { conversationKey, currentHostMode, listMailFiles, openThreadKey, outlookReady, readMailFile, readParties } from "./host";
+import { conversationKey, currentHostMode, listMailFiles, openThreadKey, outlookReady, readMailFile, readMailHeader, readParties } from "./host";
 import { MAIL_ATTACH_HINT, MailAttachPlan, planMailAttach } from "./mailAttach";
 import { collectFreeSlots } from "./slots";
 import { renderMarkdown } from "./markdown";
@@ -101,6 +101,7 @@ export function mount(root: HTMLElement): void {
   let committed: CommittedFile[] = [];
   let memory: Memory = { notes: [], people: [] };
   let parties: Party[] = [];
+  let mailHeader: Parameters<typeof renderMailHeader>[0] = null;
   let openFileList: "pending" | "kept" | "mail" | null = null;
   let mailGuide = false;
   let mailNotice = "";
@@ -129,7 +130,7 @@ export function mount(root: HTMLElement): void {
   const historyBtn = iconButton("会話の履歴", ICONS.history, "前の会話に戻ります");
   const memoryBtn = iconButton("コンテキスト", ICONS.memory, "LLMに渡す文脈（コンテキスト）を設定します。");
   const connectBtn = iconButton("接続", ICONS.plug, "接続先を確認します");
-  const scheduleBtn = iconButton("日程調整", ICONS.calendar, "空きを探す曜日と時間を決めます");
+  const scheduleBtn = iconButton("日程調整", ICONS.calendar, "空きを探す曜日、時間、日数を決めます");
   const settingsBtn = iconButton("設定", ICONS.settings, "文字サイズや書体、待ち時間を変えます");
   const infoBtn = iconButton(aboutCopy.buttonLabel, ICONS.info, "できることの説明を開きます");
   actions.append(historyBtn, memoryBtn, missing, connectBtn, scheduleBtn, settingsBtn, infoBtn);
@@ -285,6 +286,11 @@ export function mount(root: HTMLElement): void {
     return !busy && !pending.some(isPending) && !mailJobs.some(isPending) && Boolean(composer.input.value.trim());
   }
 
+  function rememberMail(): void {
+    parties = readParties();
+    mailHeader = readMailHeader();
+  }
+
   function refreshMeter(): void {
     const readyPending = pending.filter(isReady).map(commit);
     const tokens = countOutgoingTokens({
@@ -300,6 +306,7 @@ export function mount(root: HTMLElement): void {
       searxng: Boolean(settings.searxngUrl.trim()),
       argos: Boolean(settings.argosBaseUrl.trim()),
       memory: renderMemorySection(memory, parties),
+      mail: renderMailHeader(mailHeader),
     });
     const warn = settings.contextLimit > 0 && tokens / settings.contextLimit >= 0.8;
     meterCount.textContent = `${tokens.toLocaleString("ja-JP")} / ${settings.contextLimit.toLocaleString("ja-JP")}`;
@@ -406,13 +413,15 @@ export function mount(root: HTMLElement): void {
       pending = pending.filter((row) => row.status !== "ready");
       committed = await saveConversationFiles(conversation.id, committed);
       const hasFiles = committed.length > 0;
-      parties = readParties();
+      rememberMail();
       const memoryText = renderMemorySection(memory, parties);
+      const mailText = renderMailHeader(mailHeader);
       const reserved = systemPrompt({
         files: hasFiles,
         searxng: Boolean(settings.searxngUrl.trim()),
         argos: Boolean(settings.argosBaseUrl.trim()),
         memory: memoryText,
+        mail: mailText,
       }).length + instruction.length;
       const forModel = modelTurnText(instruction, committed, settings.contextLimit, reserved);
       const forHistory = historyTurnText(instruction, committed, settings.contextLimit, reserved);
@@ -427,6 +436,7 @@ export function mount(root: HTMLElement): void {
         instruction: forModel,
         hasFiles,
         memory: memoryText,
+        mail: mailText,
         pathPrefixes,
         signal: turnAbort.signal,
         onDelta: (snapshot) => {
@@ -530,6 +540,16 @@ export function mount(root: HTMLElement): void {
     return row;
   }
 
+  function horizonField(): HTMLInputElement {
+    const input = numberField(String(settings.slotHorizonDays), (n) => {
+      const days = Math.min(MAX_HORIZON_DAYS, Math.max(MIN_HORIZON_DAYS, n));
+      input.value = String(days);
+      settings = { ...settings, slotHorizonDays: days };
+      saveSettings(settings);
+    });
+    return input;
+  }
+
   function hourFields(): HTMLElement {
     const row = el("div");
     row.className = "pair";
@@ -608,7 +628,7 @@ export function mount(root: HTMLElement): void {
     stack.className = "stack";
     stack.append(
       calendarSourceFields(),
-      note("日程調整で使う曜日、対応時間、枠の長さです。"),
+      note("日程調整で使う曜日、対応時間、枠の長さ、探す日数です。"),
       labeled(
         "候補の開始",
         "翌営業日以降は、空き枠にしたくない曜日を除いた次の日から探します。翌々営業日以降は、その次の営業日から探します。",
@@ -646,6 +666,11 @@ export function mount(root: HTMLElement): void {
         })
       ),
       labeled(
+        "探す日数",
+        "今日から数えて何日先まで空きを探すか。7から60まで。既定は14。",
+        horizonField()
+      ),
+      labeled(
         "クールダウン",
         "予定の前後を塞ぎます。対応時間の端では足しません。",
         choices(
@@ -676,7 +701,7 @@ export function mount(root: HTMLElement): void {
   }
 
   function openMemory(): void {
-    parties = readParties();
+    rememberMail();
     const stack = el("div");
     stack.className = "stack";
     const failure = note("");
@@ -1299,7 +1324,7 @@ export function mount(root: HTMLElement): void {
       }
       freshConversation = false;
       shownKey = key;
-      parties = readParties();
+      rememberMail();
       composer.input.value = draft.text;
       pending = draft.pending;
       fit(composer.input);

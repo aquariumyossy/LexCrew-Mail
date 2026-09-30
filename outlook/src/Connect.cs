@@ -163,6 +163,7 @@ namespace KuruOutlook
             "window.kuru={getContext:function(){return chrome.webview.hostObjects.sync.bridge.GetContext();}," +
             "readItem:function(){return chrome.webview.hostObjects.sync.bridge.ReadItem();}," +
             "readParties:function(){return chrome.webview.hostObjects.sync.bridge.ReadParties();}," +
+            "readHeader:function(){return chrome.webview.hostObjects.sync.bridge.ReadHeader();}," +
             "writeDraft:function(json){return chrome.webview.hostObjects.sync.bridge.WriteDraft(json);}," +
             "readCalendar:function(json){return chrome.webview.hostObjects.sync.bridge.ReadCalendar(json);}," +
             "listMailFiles:function(){return chrome.webview.hostObjects.sync.bridge.ListMailFiles();}," +

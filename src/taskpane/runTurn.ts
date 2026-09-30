@@ -31,6 +31,7 @@ export async function runTurn(input: {
   instruction: string;
   hasFiles?: boolean;
   memory: string;
+  mail: string;
   pathPrefixes: string[];
   signal: AbortSignal;
   onDelta: (snapshot: { content: string; reasoningContent: string }) => void;
@@ -40,7 +41,7 @@ export async function runTurn(input: {
   const argos = Boolean(input.settings.argosBaseUrl.trim());
   const tools = buildTools({ searxng, argos });
   const messages: ChatMessage[] = [
-    { role: "system", content: systemPrompt({ files: input.hasFiles, now: new Date(), searxng, argos, memory: input.memory }) },
+    { role: "system", content: systemPrompt({ files: input.hasFiles, now: new Date(), searxng, argos, memory: input.memory, mail: input.mail }) },
     ...input.history.map((message) => ({
       role: message.role,
       content: message.content,

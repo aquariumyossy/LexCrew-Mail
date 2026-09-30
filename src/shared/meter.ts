@@ -16,10 +16,11 @@ export function countOutgoingTokens(input: {
   searxng: boolean;
   argos: boolean;
   memory: string;
+  mail?: string;
   now?: Date;
 }): number {
   const hasFiles = input.files.length > 0;
-  const offered = { files: hasFiles, searxng: input.searxng, argos: input.argos, memory: input.memory };
+  const offered = { files: hasFiles, searxng: input.searxng, argos: input.argos, memory: input.memory, mail: input.mail };
   const reserved = systemPrompt(offered).length + input.instruction.length;
   const messages = [
     { role: "system", content: systemPrompt({ ...offered, now: input.now ?? new Date() }) },

@@ -69,7 +69,7 @@ export function buildTools(options: { searxng: boolean; argos: boolean }): ToolD
       type: "function",
       function: {
         name: TOOL_GET_OPEN_ITEM,
-        description: "開いているメールの件名、宛先、本文の平文を読む。予定と未選択では失敗する。",
+        description: "開いているメールの件名、差出人、宛先、CC、本文の平文を読む。予定と未選択では失敗する。",
         parameters: { type: "object", properties: {} },
       },
     },
@@ -78,7 +78,7 @@ export function buildTools(options: { searxng: boolean; argos: boolean }): ToolD
       function: {
         name: TOOL_APPLY_DRAFT,
         description:
-          "作成ウィンドウの件名と宛先を置き換え、本文は新しい前文だけを差し替える。閲覧中は書かない。bodyHtml は新しい前文だけ。署名と引用は含めない。",
+          "作成ウィンドウの件名と宛先を置き換え、本文は新しい前文だけを差し替える。閲覧中は書かない。bodyHtml は新しい前文だけ。署名と引用は含めない。宛先を変えてほしいと頼まれたとき以外は、to と cc を省略する。省略するとその欄は残る。空の配列を渡すとその欄を空にする。",
         parameters: draftParams,
       },
     },
@@ -87,7 +87,7 @@ export function buildTools(options: { searxng: boolean; argos: boolean }): ToolD
       function: {
         name: TOOL_FIND_FREE_SLOTS,
         description:
-          "設定済みの対応時間と曜日で、予定表から連続して空いている時間帯を最大件数まで返す。各時間帯は枠の長さ以上ある。引数は使わない。件名は含まれない。名前のある予定は list_events。",
+          "設定済みの対応時間、曜日、探す日数で、予定表から連続して空いている時間帯を最大件数まで返す。各時間帯は枠の長さ以上ある。引数は使わない。件名は含まれない。名前のある予定は list_events。",
         parameters: { type: "object", properties: {} },
       },
     },

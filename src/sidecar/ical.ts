@@ -1,10 +1,10 @@
 import ical, { EventInstance, VEvent } from "node-ical";
 import { Appointment, formatLocal } from "../shared/freeSlots";
 
-const MAX_BYTES = 4_000_000;
+const MAX_BYTES = 16_000_000;
 const MAX_HOPS = 5;
 const MAX_EVENTS = 1500;
-const FETCH_MS = 15_000;
+const FETCH_MS = 60_000;
 
 export function assertGoogleIcalUrl(raw: string): URL {
   let url: URL;

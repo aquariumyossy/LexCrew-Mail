@@ -1,4 +1,4 @@
-import { HostMode, MailDraft, emptyDraft } from "../shared/draft";
+import { HostMode, MailDraft, asStringList, emptyDraft } from "../shared/draft";
 import { Party, normalizeAddress } from "../shared/memory";
 import { Appointment, formatLocal } from "../shared/freeSlots";
 import { MailFontStamp } from "../shared/mailFont";
@@ -7,6 +7,7 @@ type KuruHost = {
   getContext(): string;
   readItem(): string;
   readParties(): string;
+  readHeader(): string;
   writeDraft(json: string): string;
   readCalendar(json: string): string;
   listMailFiles(): string;
@@ -54,6 +55,35 @@ export function conversationKey(): string {
 }
 
 export type OpenItem = MailDraft & { from: string };
+
+export type MailHeader = {
+  subject: string;
+  from: string;
+  to: string[];
+  cc: string[];
+};
+
+export function readMailHeader(): MailHeader | null {
+  if (!outlookReady()) return null;
+  try {
+    const parsed = JSON.parse(bridge().readHeader()) as {
+      ok?: unknown;
+      subject?: unknown;
+      from?: unknown;
+      to?: unknown;
+      cc?: unknown;
+    };
+    if (parsed.ok !== true) return null;
+    return {
+      subject: typeof parsed.subject === "string" ? parsed.subject : "",
+      from: typeof parsed.from === "string" ? parsed.from : "",
+      to: asStringList(parsed.to),
+      cc: asStringList(parsed.cc),
+    };
+  } catch {
+    return null;
+  }
+}
 
 export function readParties(): Party[] {
   if (!outlookReady()) return [];

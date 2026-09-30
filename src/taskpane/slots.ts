@@ -20,9 +20,10 @@ export async function loadAppointments(settings: Settings, from: Date, to: Date)
 
 export async function collectFreeSlots(settings: Settings): Promise<{ slots: FreeSlot[]; note: string; events: number }> {
   const now = new Date();
-  const range = slotWindow(now);
+  const query = slotQueryFromSettings(settings);
+  const range = slotWindow(now, query.horizonDays);
   const appointments = await loadAppointments(settings, range.from, range.to);
-  const found = findFreeSlots(now, appointments, slotQueryFromSettings(settings));
+  const found = findFreeSlots(now, appointments, query);
   if (settings.calendarOutlook || settings.calendarGoogle) {
     return { ...found, events: appointments.length };
   }
