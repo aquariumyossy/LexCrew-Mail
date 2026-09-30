@@ -26,6 +26,8 @@ export type StoredChatMessage = {
   tool_call_id?: string;
 };
 
+export type UiFontSize = "small" | "medium" | "large";
+
 export type Settings = {
   llmBaseUrl: string;
   llmApiKey: string;
@@ -53,6 +55,7 @@ export type Settings = {
   readMailAttachments: boolean;
   mailFontId: MailFontId;
   mailFontSizePt: number;
+  uiFontSize: UiFontSize;
 };
 
 export type TextSetting =
@@ -88,6 +91,7 @@ export function loadSettings(): Settings {
     readMailAttachments: true,
     mailFontId: normalizeMailFontId(undefined),
     mailFontSizePt: normalizeMailFontSizePt(undefined),
+    uiFontSize: normalizeUiFontSize(undefined),
   };
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
@@ -108,6 +112,7 @@ export function loadSettings(): Settings {
       readMailAttachments: normalizeReadMailAttachments(parsed.readMailAttachments),
       mailFontId: normalizeMailFontId(parsed.mailFontId),
       mailFontSizePt: normalizeMailFontSizePt(parsed.mailFontSizePt),
+      uiFontSize: normalizeUiFontSize(parsed.uiFontSize),
     };
   } catch {
     return empty;
@@ -130,6 +135,11 @@ function slotDefaults(): Pick<Settings, "excludedWeekdays" | "slotDayStart" | "s
 
 export function normalizeReadMailAttachments(value: unknown): boolean {
   return typeof value === "boolean" ? value : true;
+}
+
+export function normalizeUiFontSize(value: unknown): UiFontSize {
+  if (value === "small" || value === "medium" || value === "large") return value;
+  return "medium";
 }
 
 export function normalizeCalendarSource(parsed: Partial<Pick<Settings, "calendarOutlook" | "calendarGoogle" | "googleIcalUrl">> | null | undefined): Pick<Settings, "calendarOutlook" | "calendarGoogle" | "googleIcalUrl"> {

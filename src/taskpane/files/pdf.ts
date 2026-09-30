@@ -1,3 +1,4 @@
+import { copyArrayBuffer } from "../../shared/copyBytes";
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 
@@ -19,7 +20,7 @@ export type PdfHandle = {
 
 export async function openPdf(bytes: ArrayBuffer): Promise<PdfHandle> {
   const task = getDocument({
-    data: new Uint8Array(bytes),
+    data: copyArrayBuffer(bytes),
     // Without the CMap, a Japanese text layer comes back empty and the file
     // is sent to the vision model as if it were a scan.
     cMapUrl: `${PDF_ASSETS}cmaps/`,

@@ -35,7 +35,7 @@ import { MAIL_FONTS, MAIL_FONT_SIZE_MAX, MAIL_FONT_SIZE_MIN, MAIL_FONT_SIZE_STEP
 import { countOutgoingTokens } from "../shared/meter";
 import { Memory, Party, renderMemorySection } from "../shared/memory";
 import { systemPrompt } from "../shared/prompts";
-import { ScopeRow, Settings, TextSetting, adoptStoredConnection, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
+import { ScopeRow, Settings, TextSetting, UiFontSize, adoptStoredConnection, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
 import { badgeLabel, ingestBytes, ingestFile, readErrorMessage } from "./files/attach";
 import { conversationKey, currentHostMode, listMailFiles, openThreadKey, outlookReady, readMailFile, readParties } from "./host";
 import { MAIL_ATTACH_HINT, MailAttachPlan, planMailAttach } from "./mailAttach";
@@ -81,6 +81,7 @@ const ICONS = {
 export function mount(root: HTMLElement): void {
   const selected = new Set<string>();
   let settings = loadSettings();
+  applyUiFont(settings.uiFontSize);
   let busy = false;
   let banner: Banner | null = null;
   let models: string[] = [];
@@ -129,7 +130,7 @@ export function mount(root: HTMLElement): void {
   const memoryBtn = iconButton("コンテキスト", ICONS.memory, "LLMに渡す文脈（コンテキスト）を設定します。");
   const connectBtn = iconButton("接続", ICONS.plug, "接続先を確認します");
   const scheduleBtn = iconButton("日程調整", ICONS.calendar, "空きを探す曜日と時間を決めます");
-  const settingsBtn = iconButton("設定", ICONS.settings, "書体や待ち時間などを変えます");
+  const settingsBtn = iconButton("設定", ICONS.settings, "文字サイズや書体、待ち時間を変えます");
   const infoBtn = iconButton(aboutCopy.buttonLabel, ICONS.info, "できることの説明を開きます");
   actions.append(historyBtn, memoryBtn, missing, connectBtn, scheduleBtn, settingsBtn, infoBtn);
   header.append(meter, actions);
@@ -162,12 +163,14 @@ export function mount(root: HTMLElement): void {
     composer.send.disabled = !canSend();
     refreshMeter();
   });
+  function refuseBusyAttach(): boolean {
+    if (!busy) return false;
+    banner = { kind: "error", text: "応答中はファイルを添付できません。" };
+    paint();
+    return true;
+  }
   composer.attach.addEventListener("click", () => {
-    if (busy) {
-      banner = { kind: "error", text: "応答中はファイルを添付できません。" };
-      paint();
-      return;
-    }
+    if (refuseBusyAttach()) return;
     composer.picker.click();
   });
   composer.picker.addEventListener("change", () => {
@@ -175,6 +178,45 @@ export function mount(root: HTMLElement): void {
     composer.picker.value = "";
     addFiles(picked);
   });
+  let fileDragDepth = 0;
+  function fileDrag(data: DataTransfer | null): boolean {
+    return Boolean(data && Array.from(data.types).includes("Files"));
+  }
+  function overComposer(target: EventTarget | null): boolean {
+    return target instanceof Node && composer.box.contains(target);
+  }
+  function markFileDrag(on: boolean): void {
+    composer.box.classList.toggle("dropping", on);
+  }
+  document.addEventListener("dragenter", (event) => {
+    if (!fileDrag(event.dataTransfer) || !overComposer(event.target)) return;
+    fileDragDepth += 1;
+    markFileDrag(true);
+  }, true);
+  document.addEventListener("dragleave", (event) => {
+    if (fileDragDepth === 0 || !overComposer(event.target)) return;
+    fileDragDepth -= 1;
+    if (fileDragDepth === 0) markFileDrag(false);
+  }, true);
+  document.addEventListener("dragover", (event) => {
+    if (!fileDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  }, true);
+  document.addEventListener("drop", (event) => {
+    if (!fileDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    fileDragDepth = 0;
+    markFileDrag(false);
+    if (!overComposer(event.target)) return;
+    if (refuseBusyAttach()) return;
+    const picked = Array.from(event.dataTransfer?.files || []);
+    if (picked.length) addFiles(picked);
+  }, true);
+  document.addEventListener("dragend", () => {
+    fileDragDepth = 0;
+    markFileDrag(false);
+  }, true);
   document.addEventListener("pointerdown", (event) => {
     const target = event.target;
     if (!(target instanceof Node) || composer.badges.contains(target) || composer.mailBadges.contains(target)) return;
@@ -782,6 +824,25 @@ export function mount(root: HTMLElement): void {
     const stack = el("div");
     stack.className = "stack";
     stack.append(
+      labeled(
+        "画面の文字サイズ",
+        "この画面の文字です。メールへ書き戻す大きさとは別です。",
+        choices(
+          "ui-font",
+          [
+            { value: "small", label: "小" },
+            { value: "medium", label: "標準" },
+            { value: "large", label: "大" },
+          ],
+          settings.uiFontSize,
+          (value) => {
+            settings = { ...settings, uiFontSize: value };
+            saveSettings(settings);
+            applyUiFont(settings.uiFontSize);
+            fit(composer.input);
+          }
+        )
+      ),
       mailReadField(),
       labeled("書き戻す書体", "前文だけに付きます。署名と引用はそのままです。既定は 10.5pt の游ゴシック。", mailFontSelect()),
       labeled("書き戻す大きさ（pt）", "8から36まで、0.5刻み。", mailFontSizeInput()),
@@ -2035,6 +2096,10 @@ function buildDialog(root: HTMLElement): { open: (title: string, body: HTMLEleme
   };
 }
 
+function applyUiFont(size: UiFontSize): void {
+  document.documentElement.dataset.uiFont = size;
+}
+
 function fit(input: HTMLTextAreaElement): void {
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, 168)}px`;
@@ -2043,12 +2108,15 @@ function fit(input: HTMLTextAreaElement): void {
 function css(): string {
   return `
     html, body { height: 100%; margin: 0; }
-    body { background: #fff; color: #1a1a1a; font: 14px/1.5 "Yu Gothic UI","Meiryo",sans-serif; }
-    button, input, textarea { font: inherit; color: inherit; }
+    html { font-size: 14px; }
+    html[data-ui-font="small"] { font-size: 12px; }
+    html[data-ui-font="large"] { font-size: 16px; }
+    body { background: #fff; color: #1a1a1a; font: 1rem/1.5 "Yu Gothic UI","Meiryo",sans-serif; }
+    button, input, textarea, select { font: inherit; color: inherit; }
     .app { box-sizing: border-box; height: 100vh; display: flex; flex-direction: column; gap: 10px; padding: 12px; }
     .header { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-height: 24px; padding-bottom: 2px; border-bottom: 1px solid #b8e4f4; }
     .meter { display: flex; flex-direction: column; min-width: 0; flex-shrink: 1; line-height: 16px; }
-    .meter-count, .meter-warn, .missing { color: #3f6c83; font-size: 12px; line-height: 16px; }
+    .meter-count, .meter-warn, .missing { color: #3f6c83; font-size: 0.857rem; line-height: 16px; }
     .meter-count.warn, .meter-warn { color: #bc2f32; }
     .actions { display: flex; align-items: center; flex-shrink: 0; }
     .icon, .banner button { width: 24px; height: 24px; border: 0; background: transparent; color: #333; padding: 0; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; }
@@ -2056,13 +2124,13 @@ function css(): string {
     .icon svg, .banner svg { width: 16px; height: 16px; }
     .icon:hover { background: #f0f0f0; }
     .header .icon:hover { background: #d2eff9; }
-    .banner { display: flex; align-items: flex-start; gap: 8px; border-radius: 4px; padding: 6px 8px; font-size: 12px; line-height: 16px; }
+    .banner { display: flex; align-items: flex-start; gap: 8px; border-radius: 4px; padding: 6px 8px; font-size: 0.857rem; line-height: 16px; }
     .banner span { flex: 1; white-space: pre-wrap; }
     .banner.success, .banner.warning, .banner.error { background: #f5f5f5; color: #1a1a1a; border: 1px solid #d0d0d0; }
     .chat { flex: 1; min-height: 120px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
     .empty { border: 1px solid #e0e0e0; border-radius: 8px; padding: 24px 8px; text-align: center; color: #5c5c5c; }
     .empty p { margin: 0 0 8px; }
-    .empty p:last-child { margin: 0; font-size: 12px; }
+    .empty p:last-child { margin: 0; font-size: 0.857rem; }
     .turn { display: flex; flex-direction: column; gap: 6px; }
     .user { align-self: flex-end; max-width: 92%; background: #f2f2f2; border: 1px solid #e0e0e0; border-radius: 8px; padding: 8px 10px; }
     .assistant { align-self: flex-start; max-width: 100%; padding: 8px 10px; }
@@ -2070,85 +2138,86 @@ function css(): string {
     .md > :first-child { margin-top: 0; }
     .md > :last-child { margin-bottom: 0; }
     .md h1, .md h2, .md h3, .md h4 { margin: 0.7em 0 0.35em; line-height: 1.35; font-weight: 600; }
-    .md h1 { font-size: 16px; } .md h2 { font-size: 15px; } .md h3 { font-size: 14px; }
+    .md h1 { font-size: 1.143rem; } .md h2 { font-size: 1.071rem; } .md h3 { font-size: 1rem; }
     .md p { margin: 0 0 0.55em; }
     .md ul, .md ol { margin: 0 0 0.55em; padding-left: 1.35em; }
     .md blockquote { margin: 0 0 0.55em; padding-left: 8px; border-left: 3px solid #bdbdbd; color: #333; }
-    .md code { font-family: Consolas, "Yu Gothic UI", monospace; font-size: 12px; background: #f2f2f2; padding: 0 4px; border-radius: 3px; }
+    .md code { font-family: Consolas, "Yu Gothic UI", monospace; font-size: 0.857rem; background: #f2f2f2; padding: 0 4px; border-radius: 3px; }
     .md pre { overflow-x: auto; background: #f2f2f2; padding: 8px; border-radius: 6px; }
     .md pre code { background: transparent; padding: 0; }
-    .md table { border-collapse: collapse; font-size: 12px; width: 100%; }
+    .md table { border-collapse: collapse; font-size: 0.857rem; width: 100%; }
     .md th, .md td { border: 1px solid #d0d0d0; padding: 4px 6px; vertical-align: top; }
     .md th { background: #f2f2f2; text-align: left; }
     .md a { color: #1a1a1a; }
-    .fold { border: 1px solid #d0d0d0; border-radius: 6px; padding: 6px 8px; color: #5c5c5c; font-size: 12px; }
+    .fold { border: 1px solid #d0d0d0; border-radius: 6px; padding: 6px 8px; color: #5c5c5c; font-size: 0.857rem; }
     .fold pre, .fold p, .hit p { white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; }
     .hit { border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px; margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
     .chips { display: flex; flex-wrap: wrap; gap: 4px; }
-    .chips span, .tool-error { border: 1px solid #d0d0d0; border-radius: 999px; padding: 2px 8px; font-size: 12px; }
+    .chips span, .tool-error { border: 1px solid #d0d0d0; border-radius: 999px; padding: 2px 8px; font-size: 0.857rem; }
     .tool-error { font-weight: 600; border-radius: 6px; }
-    .warn { margin: 0; font-size: 12px; font-weight: 600; }
+    .warn { margin: 0; font-size: 0.857rem; font-weight: 600; }
     .caret { display: inline-block; width: 2px; height: 1em; margin-left: 2px; background: #333; vertical-align: text-bottom; }
-    .stop { border: 1px solid #d0d0d0; background: #fff; border-radius: 6px; font-size: 12px; padding: 2px 8px; }
+    .stop { border: 1px solid #d0d0d0; background: #fff; border-radius: 6px; font-size: 0.857rem; padding: 2px 8px; }
     .composer { border-top: 1px solid #e0e0e0; padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+    .composer.dropping { background: #e8f3fb; border-radius: 8px; box-shadow: inset 0 0 0 1px #0e344e; }
     .file-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
     .file-badges:empty { display: none; }
     .file-spin { width: 12px; height: 12px; border: 2px solid #d0d0d0; border-top-color: #0e344e; border-radius: 50%; animation: file-spin .8s linear infinite; }
     @keyframes file-spin { to { transform: rotate(360deg); } }
     .file-chip-wrap { position: relative; max-width: 100%; }
-    .file-chip { border: 0; background: #e8f3fb; color: #0e344e; border-radius: 999px; font-size: 12px; line-height: 18px; padding: 1px 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+    .file-chip { border: 0; background: #e8f3fb; color: #0e344e; border-radius: 999px; font-size: 0.857rem; line-height: 18px; padding: 1px 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
     .file-chip.kept { background: #f2f2f2; color: #333; }
     .file-chip.danger { background: #fde7e9; color: #bc2f32; }
     .file-pop { position: absolute; z-index: 4; bottom: calc(100% + 4px); left: 0; background: #fff; border: 1px solid #d0d0d0; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,.12); padding: 4px; min-width: 200px; max-width: 260px; max-height: 40vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
     .file-row { display: flex; align-items: center; gap: 4px; }
-    .file-name { flex: 1; min-width: 0; border: 0; background: transparent; text-align: left; font-size: 12px; padding: 2px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-name { flex: 1; min-width: 0; border: 0; background: transparent; text-align: left; font-size: 0.857rem; padding: 2px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .file-name:hover:not(:disabled) { background: #f0f0f0; border-radius: 4px; }
     .file-name:disabled { color: #888; }
-    .file-detail { flex: none; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #5c5c5c; font-size: 11px; }
+    .file-detail { flex: none; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #5c5c5c; font-size: 0.786rem; }
     .file-detail.fail { color: #bc2f32; }
     .file-drop { width: 20px; height: 20px; min-width: 20px; border: 0; background: transparent; color: #333; padding: 0; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; }
     .file-drop svg { width: 12px; height: 12px; }
     .file-drop:hover:not(:disabled) { background: #f0f0f0; }
     .file-drop:disabled { color: #888; }
-    .file-meta { margin: 0 0 8px; color: #5c5c5c; font-size: 11px; line-height: 16px; }
-    .file-preview { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 17px; font-family: inherit; }
+    .file-meta { margin: 0 0 8px; color: #5c5c5c; font-size: 0.786rem; line-height: 16px; }
+    .file-preview { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 0.857rem; line-height: 17px; font-family: inherit; }
     .mail-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
     .mail-badges:empty { display: none; }
-    .mail-hint { margin: 0; flex-basis: 100%; color: #5c5c5c; font-size: 12px; line-height: 16px; }
+    .mail-hint { margin: 0; flex-basis: 100%; color: #5c5c5c; font-size: 0.857rem; line-height: 16px; }
     .clip { width: 24px; height: 24px; min-width: 24px; border: 0; background: transparent; color: #333; padding: 0; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; }
     .clip svg { width: 16px; height: 16px; }
     .clip:hover:not(:disabled) { background: #f0f0f0; }
     .clip:disabled { color: #bdbdbd; }
     .shortcuts { display: flex; flex-wrap: wrap; gap: 4px; }
-    .shortcut { border: 1px solid #d0d0d0; background: #fff; border-radius: 999px; padding: 2px 8px; font-size: 12px; }
+    .shortcut { border: 1px solid #d0d0d0; background: #fff; border-radius: 999px; padding: 2px 8px; font-size: 0.857rem; }
     .shortcut:hover { background: #f0f0f0; }
     .shortcut:disabled { color: #888; }
     .frame { border: 1px solid #e0e0e0; border-radius: 10px; padding: 8px 8px 6px; display: flex; flex-direction: column; gap: 4px; }
     .frame:focus-within { border-color: #333; }
-    textarea { border: 0; outline: 0; resize: none; width: 100%; min-height: 21px; max-height: 168px; padding: 2px 4px; background: transparent; }
+    textarea { border: 0; outline: 0; resize: none; width: 100%; min-height: 1.5em; max-height: 168px; padding: 2px 4px; background: transparent; }
     textarea::placeholder { color: #888; }
     .bar { display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
-    .argos { border: 0; background: transparent; color: #5c5c5c; font-size: 12px; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 6px; }
+    .argos { border: 0; background: transparent; color: #5c5c5c; font-size: 0.857rem; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 6px; }
     .argos:hover { background: #f0f0f0; border-radius: 4px; }
-    .primary, .chip, .history { border-radius: 6px; border: 1px solid #d0d0d0; background: #fff; padding: 2px 8px; font-size: 12px; }
+    .primary, .chip, .history { border-radius: 6px; border: 1px solid #d0d0d0; background: #fff; padding: 2px 8px; font-size: 0.857rem; }
     .send { width: 28px; height: 28px; border: 0; border-radius: 999px; background: #333; color: #fff; display: inline-flex; align-items: center; justify-content: center; }
     .send:disabled { background: #f0f0f0; color: #888; }
     .send svg { width: 14px; height: 14px; }
     .back { position: fixed; inset: 0; background: rgba(0,0,0,.28); display: flex; align-items: flex-start; justify-content: center; padding: 16px 8px; }
     .back[hidden] { display: none; }
     .dialog { width: 100%; background: #fff; border-radius: 8px; padding: 8px; box-shadow: 0 8px 24px rgba(14,52,78,.18); max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
-    .dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; color: #333; font-size: 12px; }
+    .dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; color: #333; font-size: 0.857rem; }
     .dialog-title { line-height: 16px; }
     .scope-list { display: flex; flex-direction: column; min-height: 140px; max-height: 360px; overflow: auto; border: 1px solid #d0d0d0; border-radius: 6px; padding: 2px; }
-    .scope-row { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: transparent; text-align: left; padding: 4px 6px; border-radius: 4px; font-size: 12px; line-height: 16px; }
+    .scope-row { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: transparent; text-align: left; padding: 4px 6px; border-radius: 4px; font-size: 0.857rem; line-height: 16px; }
     .scope-row:hover, .scope-row.on { background: #f0f0f0; }
     .scope-row.nested { padding-left: 22px; }
     .tick { width: 14px; height: 14px; flex: none; color: #333; display: inline-flex; }
     .tick svg { width: 14px; height: 14px; }
-    .pill { flex: none; font-size: 10px; line-height: 16px; padding: 0 6px; border-radius: 999px; border: 1px solid #d0d0d0; color: #5c5c5c; }
+    .pill { flex: none; font-size: 0.714rem; line-height: 16px; padding: 0 6px; border-radius: 999px; border: 1px solid #d0d0d0; color: #5c5c5c; }
     .scope-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .scope-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-    .foot-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #5c5c5c; font-size: 12px; }
+    .foot-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #5c5c5c; font-size: 0.857rem; }
     .dialog-body { overflow: auto; }
     .stack { display: flex; flex-direction: column; gap: 8px; }
     .memory-actions { display: flex; align-items: center; gap: 6px; }
@@ -2156,28 +2225,28 @@ function css(): string {
     .memory-line input { flex: 1; min-width: 0; border: 1px solid #d0d0d0; border-radius: 6px; padding: 2px 6px; }
     .memory-text { box-sizing: border-box; width: 100%; min-height: 72px; max-height: 160px; border: 1px solid #d0d0d0; border-radius: 6px; padding: 4px 6px; background: #fff; }
     .field { display: flex; flex-direction: column; gap: 2px; }
-    .field-label { font-size: 12px; }
+    .field-label { font-size: 0.857rem; }
     .choices { display: flex; flex-wrap: wrap; gap: 4px 10px; }
     .choice { flex-direction: row; align-items: center; gap: 4px; }
     .choice input { min-height: 0; width: auto; }
     .pair { display: flex; gap: 8px; }
     .pair > * { flex: 1; min-width: 0; }
-    label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+    label { display: flex; flex-direction: column; gap: 2px; font-size: 0.857rem; }
     input, select { border: 1px solid #d0d0d0; border-radius: 4px; padding: 4px 6px; min-height: 24px; background: #fff; }
-    .note { margin: 0; color: #5c5c5c; font-size: 12px; }
+    .note { margin: 0; color: #5c5c5c; font-size: 0.857rem; }
     .note.ok { color: #0e344e; }
     .check { flex-direction: row; align-items: center; gap: 6px; }
     .chips { display: flex; flex-wrap: wrap; gap: 4px; }
     .chip.on, .primary { background: #333; color: #fff; border-color: #333; }
     .history-new { width: 100%; }
-    .history-heading { margin: 8px 0 0; color: #5c5c5c; font-size: 12px; }
-    .about-heading { margin: 0; color: #1a1a1a; font-size: 12px; font-weight: 600; line-height: 16px; }
+    .history-heading { margin: 8px 0 0; color: #5c5c5c; font-size: 0.857rem; }
+    .about-heading { margin: 0; color: #1a1a1a; font-size: 0.857rem; font-weight: 600; line-height: 16px; }
     .about-item { display: flex; flex-direction: column; gap: 2px; }
-    .about-item-title { margin: 0; color: #1a1a1a; font-size: 12px; font-weight: 600; line-height: 16px; }
+    .about-item-title { margin: 0; color: #1a1a1a; font-size: 0.857rem; font-weight: 600; line-height: 16px; }
     .history-row { display: flex; align-items: center; gap: 6px; }
     .history { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .history-current { flex-shrink: 0; color: #3f6c83; font-size: 12px; }
-    .history-delete { border: 1px solid #d0d0d0; background: #fff; border-radius: 6px; font-size: 12px; padding: 2px 8px; }
+    .history-current { flex-shrink: 0; color: #3f6c83; font-size: 0.857rem; }
+    .history-delete { border: 1px solid #d0d0d0; background: #fff; border-radius: 6px; font-size: 0.857rem; padding: 2px 8px; }
   `;
 }
 

@@ -27,6 +27,21 @@ describe("normalizeReadMailAttachments", () => {
   });
 });
 
+describe("loadSettings ui font", () => {
+  it("defaults, keeps valid choices, and falls back on bad ones", () => {
+    stubSettings(null);
+    expect(loadSettings().uiFontSize).toBe("medium");
+    stubSettings("{}");
+    expect(loadSettings().uiFontSize).toBe("medium");
+    stubSettings(JSON.stringify({ uiFontSize: "small" }));
+    expect(loadSettings().uiFontSize).toBe("small");
+    stubSettings(JSON.stringify({ uiFontSize: "large" }));
+    expect(loadSettings().uiFontSize).toBe("large");
+    stubSettings(JSON.stringify({ uiFontSize: "huge" }));
+    expect(loadSettings().uiFontSize).toBe("medium");
+  });
+});
+
 describe("loadSettings mail font", () => {
   it("defaults, keeps valid choices, and falls back on bad ones", () => {
     stubSettings(null);
