@@ -151,7 +151,7 @@ namespace KuruOutlook
             return false;
         }
 
-        static bool Listening()
+        public static bool Listening()
         {
             using (var client = new TcpClient())
             {

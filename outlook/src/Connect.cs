@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -84,18 +85,14 @@ namespace KuruOutlook
             try
             {
                 if (_factory == null) throw new InvalidOperationException("作業ウィンドウの準備ができていません。");
-                dynamic app = _app;
                 dynamic ribbonControl = control;
-                object parent = app.ActiveInspector() ?? app.ActiveExplorer();
-                if (parent == null) parent = ribbonControl.Context;
+                object parent = ribbonControl.Context;
                 if (parent == null) throw new InvalidOperationException("表示中の Outlook ウィンドウが見つかりません。");
+                Log("OnKuruClick parent=" + ParentKind(parent));
                 long key = WindowKey(parent);
-                object existing;
-                if (_panes.TryGetValue(key, out existing))
+                HideOtherPanes(key);
+                if (TryShowPane(key))
                 {
-                    ((dynamic)existing).Visible = true;
-                    KuruPane.Reload(key);
-                    Log("pane reloaded");
                     return;
                 }
                 KuruPane.PendingWindow = parent;
@@ -110,6 +107,80 @@ namespace KuruOutlook
             catch (Exception ex)
             {
                 Log(ex.ToString());
+            }
+        }
+
+        void HideOtherPanes(long activeKey)
+        {
+            var stale = new List<long>();
+            foreach (KeyValuePair<long, object> pair in _panes)
+            {
+                if (pair.Key == activeKey)
+                {
+                    continue;
+                }
+                try
+                {
+                    ((dynamic)pair.Value).Visible = false;
+                }
+                catch (Exception ex)
+                {
+                    Log(ex.ToString());
+                    stale.Add(pair.Key);
+                }
+            }
+            for (int i = 0; i < stale.Count; i++)
+            {
+                DropPane(stale[i]);
+            }
+        }
+
+        bool TryShowPane(long key)
+        {
+            object existing;
+            if (!_panes.TryGetValue(key, out existing))
+            {
+                return false;
+            }
+            try
+            {
+                ((dynamic)existing).Visible = true;
+                KuruPane.Reload(key);
+                Log("pane reloaded");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log(ex.ToString());
+                DropPane(key);
+                return false;
+            }
+        }
+
+        void DropPane(long key)
+        {
+            _panes.Remove(key);
+            KuruPane.Forget(key);
+        }
+
+        static string ParentKind(object window)
+        {
+            try
+            {
+                int cls = Convert.ToInt32(((dynamic)window).Class);
+                if (cls == 34)
+                {
+                    return "Explorer";
+                }
+                if (cls == 35)
+                {
+                    return "Inspector";
+                }
+                return "Unknown(" + cls + ")";
+            }
+            catch
+            {
+                return "Unknown";
             }
         }
 
@@ -171,11 +242,17 @@ namespace KuruOutlook
             "searchSent:function(json){return chrome.webview.hostObjects.bridge.SearchSent(json);}};";
         readonly object _window;
         readonly WebView2 _web = new WebView2();
+        bool _retryingSidecar;
 
         public static void Reload(long key)
         {
             KuruPane pane;
             if (Live.TryGetValue(key, out pane)) pane.NavigateFresh();
+        }
+
+        public static void Forget(long key)
+        {
+            Live.Remove(key);
         }
 
         public KuruPane()
@@ -189,15 +266,56 @@ namespace KuruOutlook
 
         async void OnLoad(object sender, EventArgs e)
         {
-            string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KURU", "WebView2");
-            Directory.CreateDirectory(folder);
-            CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(null, folder);
-            await _web.EnsureCoreWebView2Async(env);
-            _web.CoreWebView2.AddHostObjectToScript("bridge", new MailBridge(_window));
-            await _web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(HostScript);
-            _web.CoreWebView2.NavigationCompleted += async (s, args) =>
+            try
             {
-                if (!args.IsSuccess || _web.CoreWebView2 == null) return;
+                string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KURU", "WebView2");
+                Directory.CreateDirectory(folder);
+                CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(null, folder);
+                await _web.EnsureCoreWebView2Async(env);
+                _web.CoreWebView2.AddHostObjectToScript("bridge", new MailBridge(_window));
+                await _web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(HostScript);
+                _web.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
+                _web.CoreWebView2.ServerCertificateErrorDetected += (s, args) =>
+                {
+                    string subject = args.ServerCertificate == null ? "" : args.ServerCertificate.Subject;
+                    string uri = args.RequestUri ?? "";
+                    if (uri.IndexOf("127.0.0.1", StringComparison.OrdinalIgnoreCase) >= 0 && subject.IndexOf("127.0.0.1", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        args.Action = CoreWebView2ServerCertificateErrorAction.AlwaysAllow;
+                    }
+                };
+                try
+                {
+                    await _web.CoreWebView2.Profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.DiskCache);
+                }
+                catch (Exception ex)
+                {
+                    Log(ex.Message);
+                }
+                try
+                {
+                    await _web.CoreWebView2.CallDevToolsProtocolMethodAsync("Network.setCacheDisabled", "{\"cacheDisabled\":true}");
+                }
+                catch (Exception ex)
+                {
+                    Log(ex.Message);
+                }
+                long key = WindowKey(_window);
+                if (key != 0) Live[key] = this;
+                if (!await Sidecar.Ready) Log("sidecar not ready");
+                NavigateFresh();
+            }
+            catch (Exception ex)
+            {
+                Log(ex.ToString());
+            }
+        }
+
+        async void OnNavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs args)
+        {
+            if (args.IsSuccess && _web.CoreWebView2 != null)
+            {
+                _retryingSidecar = false;
                 try
                 {
                     await _web.CoreWebView2.ExecuteScriptAsync(HostScript);
@@ -206,36 +324,29 @@ namespace KuruOutlook
                 {
                     Log(ex.Message);
                 }
-            };
-            _web.CoreWebView2.ServerCertificateErrorDetected += (s, args) =>
+                return;
+            }
+            if (_retryingSidecar)
             {
-                string subject = args.ServerCertificate == null ? "" : args.ServerCertificate.Subject;
-                string uri = args.RequestUri ?? "";
-                if (uri.IndexOf("127.0.0.1", StringComparison.OrdinalIgnoreCase) >= 0 && subject.IndexOf("127.0.0.1", StringComparison.OrdinalIgnoreCase) >= 0)
+                return;
+            }
+            _retryingSidecar = true;
+            await WaitSidecarAndNavigateAsync();
+        }
+
+        async Task WaitSidecarAndNavigateAsync()
+        {
+            for (int i = 0; i < 300; i++)
+            {
+                if (Sidecar.Listening())
                 {
-                    args.Action = CoreWebView2ServerCertificateErrorAction.AlwaysAllow;
+                    NavigateFresh();
+                    return;
                 }
-            };
-            try
-            {
-                await _web.CoreWebView2.Profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.DiskCache);
+                await Task.Delay(100);
             }
-            catch (Exception ex)
-            {
-                Log(ex.Message);
-            }
-            try
-            {
-                await _web.CoreWebView2.CallDevToolsProtocolMethodAsync("Network.setCacheDisabled", "{\"cacheDisabled\":true}");
-            }
-            catch (Exception ex)
-            {
-                Log(ex.Message);
-            }
-            long key = WindowKey(_window);
-            if (key != 0) Live[key] = this;
-            if (!await Sidecar.Ready) Log("sidecar not ready");
-            NavigateFresh();
+            Log("sidecar not ready");
+            _retryingSidecar = false;
         }
 
         void NavigateFresh()
