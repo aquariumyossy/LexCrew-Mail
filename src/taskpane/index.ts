@@ -1946,19 +1946,20 @@ function renderEvents(content: string): HTMLElement | null {
 }
 
 function renderSlots(content: string): HTMLElement | null {
-  let parsed: { slots?: Array<{ start?: string; end?: string }>; note?: string; events?: number } = {};
+  let parsed: { slots?: Array<{ start?: string; end?: string }>; note?: string; cutoff?: string; events?: number } = {};
   try {
     parsed = JSON.parse(content) as typeof parsed;
   } catch {
     return null;
   }
   const slots = Array.isArray(parsed.slots) ? parsed.slots : [];
-  if (!slots.length && !parsed.note) return null;
+  if (!slots.length && !parsed.note && !parsed.cutoff) return null;
   const details = el("details");
   details.className = "fold";
   const events = typeof parsed.events === "number" ? `（予定 ${parsed.events} 件）` : "";
   details.append(el("summary", (slots.length ? `空き ${slots.length} 件` : "空きなし") + events));
   if (parsed.note) details.append(el("p", parsed.note));
+  if (parsed.cutoff) details.append(el("p", parsed.cutoff));
   for (const slot of slots) {
     details.append(el("p", `${slot.start ?? ""} から ${slot.end ?? ""}`));
   }

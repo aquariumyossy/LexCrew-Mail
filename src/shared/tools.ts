@@ -1,5 +1,6 @@
 import { EVENT_PRESETS, eventChipLabel, parseEventQuery, EventQuery } from "./calendarEvents";
 import { MAX_TOOL_ROUNDS } from "./constants";
+import { parseSlotCall, SlotCall } from "./freeSlots";
 
 export const TOOL_GET_OPEN_ITEM = "get_open_item";
 export const TOOL_APPLY_DRAFT = "apply_draft";
@@ -52,6 +53,14 @@ const eventParams = {
   },
 };
 
+const freeSlotParams = {
+  type: "object",
+  properties: {
+    from: { type: "string", description: "YYYY-MM-DD。この日から探す。to と組む。省略すると今日から。" },
+    to: { type: "string", description: "YYYY-MM-DD。この日までを含める。from が無いと起点は今日のまま。" },
+  },
+};
+
 const draftParams = {
   type: "object",
   properties: {
@@ -87,8 +96,8 @@ export function buildTools(options: { searxng: boolean; argos: boolean }): ToolD
       function: {
         name: TOOL_FIND_FREE_SLOTS,
         description:
-          "設定済みの対応時間、曜日、探す日数で、予定表から連続して空いている時間帯を最大件数まで返す。各時間帯は枠の長さ以上ある。引数は使わない。件名は含まれない。名前のある予定は list_events。",
-        parameters: { type: "object", properties: {} },
+          "設定済みの対応時間、曜日、探す日数で、予定表から連続して空いている時間帯を最大件数まで返す。各時間帯は枠の長さ以上ある。件名は含まれない。名前のある予定は list_events。期間は from と to を組で渡す。省略すると今日から設定の日数。to だけでは起点が今日のまま。cutoff があれば、その日付を次の from にして前の結果に足してもう一度呼ぶ。同じ from では呼び直さない。",
+        parameters: freeSlotParams,
       },
     },
     {
@@ -140,7 +149,7 @@ export type ParsedTool =
   | { name: typeof TOOL_SEARCH; q: string }
   | { name: typeof TOOL_SEARCH_INDEX; q: string }
   | { name: typeof TOOL_SEARCH_SENT; q: string; address: string }
-  | { name: typeof TOOL_FIND_FREE_SLOTS }
+  | { name: typeof TOOL_FIND_FREE_SLOTS; call: SlotCall }
   | { name: typeof TOOL_LIST_EVENTS; query: EventQuery };
 
 export function parseToolCall(call: ToolCall): { ok: true; tool: ParsedTool } | { ok: false; error: string } {
@@ -155,8 +164,13 @@ export function parseToolCall(call: ToolCall): { ok: true; tool: ParsedTool } | 
     return { ok: false, error: "ツール引数が JSON ではありません。" };
   }
   const name = call.function.name;
-  if (name === TOOL_GET_OPEN_ITEM || name === TOOL_FIND_FREE_SLOTS) {
+  if (name === TOOL_GET_OPEN_ITEM) {
     return { ok: true, tool: { name } };
+  }
+  if (name === TOOL_FIND_FREE_SLOTS) {
+    const slots = parseSlotCall(args);
+    if (!slots.ok) return slots;
+    return { ok: true, tool: { name, call: slots.call } };
   }
   if (name === TOOL_LIST_EVENTS) {
     const query = parseEventQuery(args);
@@ -227,13 +241,20 @@ export function toolRoundLimitNotice(maxRounds: number): string {
   );
 }
 
+function freeSlotChip(call: SlotCall): string {
+  if (call.kind === "span") return `空き ${call.from} から ${call.to}`;
+  if (call.kind === "from") return `空き ${call.from} から`;
+  if (call.kind === "to") return `空き ${call.to} まで`;
+  return "空き時間";
+}
+
 export function describeToolCall(name: string, rawArguments: string): string {
   const parsed = parseToolCall({ id: "", type: "function", function: { name, arguments: rawArguments || "{}" } });
   if (!parsed.ok) return name;
   if (parsed.tool.name === TOOL_SEARCH) return `検索「${shorten(parsed.tool.q, 20)}」`;
   if (parsed.tool.name === TOOL_SEARCH_INDEX) return `索引「${shorten(parsed.tool.q, 20)}」`;
   if (parsed.tool.name === TOOL_GET_OPEN_ITEM) return "メールを読む";
-  if (parsed.tool.name === TOOL_FIND_FREE_SLOTS) return "空き時間";
+  if (parsed.tool.name === TOOL_FIND_FREE_SLOTS) return freeSlotChip(parsed.tool.call);
   if (parsed.tool.name === TOOL_LIST_EVENTS) {
     return parsed.tool.query.q ? `予定「${shorten(parsed.tool.query.q, 20)}」` : eventChipLabel(parsed.tool.query);
   }

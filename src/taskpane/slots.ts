@@ -1,5 +1,5 @@
 import { CALENDAR_UNREAD_NOTE, CalendarEvent, EventQuery, resolveRange, selectEvents } from "../shared/calendarEvents";
-import { Appointment, findFreeSlots, FreeSlot, slotWindow } from "../shared/freeSlots";
+import { Appointment, findFreeSlots, FreeSlot, resolveSlotWindow, SlotCall } from "../shared/freeSlots";
 import { readGoogleCalendar, slotQueryFromSettings, Settings } from "./api";
 import { readCalendar } from "./host";
 
@@ -18,12 +18,17 @@ export async function loadAppointments(settings: Settings, from: Date, to: Date)
   return appointments;
 }
 
-export async function collectFreeSlots(settings: Settings): Promise<{ slots: FreeSlot[]; note: string; events: number }> {
+export async function collectFreeSlots(settings: Settings, call: SlotCall = { kind: "default" }): Promise<{ slots: FreeSlot[]; note: string; cutoff: string; events: number }> {
   const now = new Date();
   const query = slotQueryFromSettings(settings);
-  const range = slotWindow(now, query.horizonDays);
-  const appointments = await loadAppointments(settings, range.from, range.to);
-  const found = findFreeSlots(now, appointments, query);
+  const resolved = resolveSlotWindow(now, query, call);
+  if (!resolved.ok) throw new Error(resolved.error);
+  const readable = Boolean(settings.calendarOutlook || settings.calendarGoogle);
+  const bounds = resolved.window;
+  const appointments = readable && bounds.from.getTime() < bounds.to.getTime()
+    ? await loadAppointments(settings, bounds.from, bounds.to)
+    : [];
+  const found = findFreeSlots(now, appointments, query, call);
   if (settings.calendarOutlook || settings.calendarGoogle) {
     return { ...found, events: appointments.length };
   }

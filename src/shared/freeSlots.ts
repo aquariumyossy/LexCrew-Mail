@@ -39,6 +39,24 @@ export type FreeSlot = {
   end: string;
 };
 
+export type SlotCall =
+  | { kind: "default" }
+  | { kind: "from"; from: string }
+  | { kind: "to"; to: string }
+  | { kind: "span"; from: string; to: string };
+
+export type SlotWindow = {
+  from: Date;
+  to: Date;
+  applyLead: boolean;
+  note: string;
+};
+
+const RANGE_ERROR = "空きの期間が不正です。";
+const RANGE_LIMIT = "空きの期間は60日までです。";
+const PAST_NOTE = "その期間は過ぎています。";
+const CLAMP_NOTE = "開始を今日にしました。";
+
 const WEEKDAYS = [0, 1, 2, 3, 4, 5, 6];
 
 export function defaultSlotQuery(): SlotQuery {
@@ -89,22 +107,82 @@ export function formatLocal(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-export function findFreeSlots(now: Date, appointments: Appointment[], raw: Partial<SlotQuery> | SlotQuery): { slots: FreeSlot[]; note: string } {
+export function parseSlotCall(args: Record<string, unknown>): { ok: true; call: SlotCall } | { ok: false; error: string } {
+  const from = typeof args.from === "string" ? args.from.trim() : "";
+  const to = typeof args.to === "string" ? args.to.trim() : "";
+  if (!from && !to) return { ok: true, call: { kind: "default" } };
+  if (from && !to) {
+    if (!parseDay(from)) return { ok: false, error: RANGE_ERROR };
+    return { ok: true, call: { kind: "from", from } };
+  }
+  if (!from && to) {
+    if (!parseDay(to)) return { ok: false, error: RANGE_ERROR };
+    return { ok: true, call: { kind: "to", to } };
+  }
+  const start = parseDay(from);
+  const last = parseDay(to);
+  if (!start || !last || last.getTime() < start.getTime()) return { ok: false, error: RANGE_ERROR };
+  return { ok: true, call: { kind: "span", from, to } };
+}
+
+export function resolveSlotWindow(now: Date, query: SlotQuery, call: SlotCall): { ok: true; window: SlotWindow } | { ok: false; error: string } {
+  const today = startOfDay(now);
+  if (call.kind === "default") {
+    const window = slotWindow(now, query.horizonDays);
+    return { ok: true, window: { from: window.from, to: window.to, applyLead: true, note: "" } };
+  }
+  if (call.kind === "from") {
+    const start = parseDay(call.from);
+    if (!start) return { ok: false, error: RANGE_ERROR };
+    if (start.getTime() < today.getTime()) {
+      return { ok: true, window: { from: today, to: addDays(today, query.horizonDays), applyLead: false, note: CLAMP_NOTE } };
+    }
+    return { ok: true, window: { from: start, to: addDays(start, query.horizonDays), applyLead: false, note: "" } };
+  }
+  if (call.kind === "to") {
+    const last = parseDay(call.to);
+    if (!last) return { ok: false, error: RANGE_ERROR };
+    return boundedWindow(today, today, addDays(last, 1), true, "");
+  }
+  const start = parseDay(call.from);
+  const last = parseDay(call.to);
+  if (!start || !last || last.getTime() < start.getTime()) return { ok: false, error: RANGE_ERROR };
+  const end = addDays(last, 1);
+  if (end.getTime() <= today.getTime()) {
+    return { ok: true, window: { from: today, to: today, applyLead: false, note: PAST_NOTE } };
+  }
+  const from = start.getTime() < today.getTime() ? today : start;
+  return boundedWindow(today, from, end, false, from.getTime() === start.getTime() ? "" : CLAMP_NOTE);
+}
+
+export function findFreeSlots(
+  now: Date,
+  appointments: Appointment[],
+  raw: Partial<SlotQuery> | SlotQuery,
+  call: SlotCall = { kind: "default" }
+): { slots: FreeSlot[]; note: string; cutoff: string } {
   const query = normalizeSlotQuery(raw);
+  const resolved = resolveSlotWindow(now, query, call);
+  if (!resolved.ok) return { slots: [], note: resolved.error, cutoff: "" };
   if (query.excludedWeekdays.length >= WEEKDAYS.length) {
-    return { slots: [], note: "すべての曜日が空き枠の対象外です。" };
+    return { slots: [], note: "すべての曜日が空き枠の対象外です。", cutoff: "" };
   }
   const open = minutesOf(query.dayStart);
   const close = minutesOf(query.dayEnd);
   if (query.slotMinutes > close - open) {
-    return { slots: [], note: "枠の長さが対応時間に収まりません。" };
+    return { slots: [], note: "枠の長さが対応時間に収まりません。", cutoff: "" };
   }
-  const window = slotWindow(now, query.horizonDays);
+  const bounds = resolved.window;
+  if (bounds.from.getTime() >= bounds.to.getTime()) {
+    return { slots: [], note: bounds.note, cutoff: "" };
+  }
   const blocks = busyBlocks(appointments, query.cooldownMinutes);
   const byDay = new Map<string, Array<{ start: Date; end: Date }>>();
-  const lead = firstOpenDay(window.from, query.excludedWeekdays, query.fromDayAfter ? 2 : query.fromTomorrow ? 1 : 0, query.horizonDays);
-  for (let i = lead; i < query.horizonDays; i += 1) {
-    const day = addDays(window.from, i);
+  const span = daySpan(bounds.from, bounds.to);
+  const leadCount = bounds.applyLead ? (query.fromDayAfter ? 2 : query.fromTomorrow ? 1 : 0) : 0;
+  const lead = firstOpenDay(bounds.from, query.excludedWeekdays, leadCount, span);
+  for (let i = lead; i < span; i += 1) {
+    const day = addDays(bounds.from, i);
     if (query.excludedWeekdays.includes(day.getDay())) continue;
     const dayStart = atMinutes(day, open);
     const dayEnd = atMinutes(day, close);
@@ -123,11 +201,47 @@ export function findFreeSlots(now: Date, appointments: Appointment[], raw: Parti
     if (found.length) byDay.set(dayKey(day), mergeRuns(found));
   }
   const picked = pickSlots(byDay, query.maxSlots);
-  if (!picked.length) return { slots: [], note: "この期間に空いている枠はありません。" };
+  if (!picked.length) {
+    return { slots: [], note: joinNote(bounds.note, "この期間に空いている枠はありません。"), cutoff: "" };
+  }
   return {
     slots: picked.map((slot) => ({ start: formatLocal(slot.start), end: formatLocal(slot.end) })),
-    note: "",
+    note: bounds.note,
+    cutoff: cutoffNote(byDay, picked, picked.length),
   };
+}
+
+function boundedWindow(
+  today: Date,
+  from: Date,
+  to: Date,
+  applyLead: boolean,
+  note: string
+): { ok: true; window: SlotWindow } | { ok: false; error: string } {
+  if (to.getTime() <= today.getTime()) {
+    return { ok: true, window: { from: today, to: today, applyLead: false, note: PAST_NOTE } };
+  }
+  if (daySpan(from, to) > MAX_HORIZON_DAYS) return { ok: false, error: RANGE_LIMIT };
+  return { ok: true, window: { from, to, applyLead, note } };
+}
+
+function cutoffNote(
+  byDay: Map<string, Array<{ start: Date; end: Date }>>,
+  picked: Array<{ start: Date; end: Date }>,
+  count: number
+): string {
+  const taken = new Set(picked.map((slot) => slot.start.getTime()));
+  for (const [day, runs] of byDay) {
+    if (runs.some((run) => taken.has(run.start.getTime()))) continue;
+    return `${count}件で打ち切りました。${day}以降の空きは返していません。`;
+  }
+  return "";
+}
+
+function joinNote(base: string, extra: string): string {
+  if (!base) return extra;
+  if (!extra) return base;
+  return `${base} ${extra}`;
 }
 
 function firstOpenDay(today: Date, excluded: number[], count: number, horizonDays: number): number {
@@ -210,6 +324,19 @@ function overlaps(start: Date, end: Date, blocks: Array<{ start: number; end: nu
   const a = start.getTime();
   const b = end.getTime();
   return blocks.some((block) => a < block.end && block.start < b);
+}
+
+function parseDay(value: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return date;
+}
+
+function daySpan(from: Date, to: Date): number {
+  const utc = (date: Date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+  return Math.round((utc(to) - utc(from)) / 86_400_000);
 }
 
 export function parseLocal(value: string): Date | null {

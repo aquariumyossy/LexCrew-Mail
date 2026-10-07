@@ -72,9 +72,10 @@ export function shortcutInstruction(id: ReplyShortcutId, slots?: { slots: FreeSl
   return [
     shortcut.lead,
     "開いているメールへの日程調整である。",
-    "次の空き一覧以外の日時は書かない。",
+    "相手が期間を示していなければ、次の空き一覧以外の日時は書かない。find_free_slots は呼ばない。",
+    "相手の文面が、この一覧より後の期間を示しているときは、find_free_slots にその from と to を渡して呼ぶ。返った結果だけを候補にし、上の一覧は使わない。",
     "各候補は連続して空いている時間帯である。時間帯のまま「この間でご都合のよい時間」と示してよい。",
-    slots?.slots.length ? "相手が文面で示した日時と重なる時間帯を優先する。" : empty,
+    slots?.slots.length ? "相手が期間を示していなければ、相手の文面と重なる時間帯を、この一覧の中から優先する。" : empty,
     ...(slots?.slots.length && slots.note ? [slots.note] : []),
     "一覧が空なら、空いている日時を作らず、相手に候補を尋ねる。",
     "候補:",

@@ -96,7 +96,7 @@ async function executeTool(call: ToolCall, settings: Settings, pathPrefixes: str
       return JSON.stringify(await readOpenItem());
     }
     if (parsed.tool.name === TOOL_FIND_FREE_SLOTS) {
-      return JSON.stringify(await collectFreeSlots(settings));
+      return JSON.stringify(await collectFreeSlots(settings, parsed.tool.call));
     }
     if (parsed.tool.name === TOOL_LIST_EVENTS) {
       return JSON.stringify(await collectEvents(settings, parsed.tool.query));
