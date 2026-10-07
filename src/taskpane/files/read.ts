@@ -4,7 +4,7 @@ import {
   FileReadError,
   decodeUtf8,
   fileKind,
-  pdfHasTextLayer,
+  pdfNeedsOcr,
   pdfPagesToText,
 } from "../../shared/attachedFiles";
 import { officeText } from "../../shared/extract/package";
@@ -28,7 +28,7 @@ async function readPdf(bytes: ArrayBuffer): Promise<ByteRead> {
   const handle = await openPdf(bytes);
   try {
     const pages = await readPdfPages(handle.doc, MAX_FILE_CHARS);
-    if (!pdfHasTextLayer(pages)) {
+    if (pdfNeedsOcr(pages)) {
       return { status: "scan", pages: handle.doc.numPages };
     }
     const text = pdfPagesToText(pages, "text");

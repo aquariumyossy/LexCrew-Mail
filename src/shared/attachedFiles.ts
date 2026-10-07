@@ -6,6 +6,7 @@ import {
   MAX_FILE_CHARS,
   MAX_IMAGE_BYTES,
   MAX_PDF_BYTES,
+  PDF_SPARSE_PAGE_CHARS,
 } from "./constants";
 
 export type FileOrigin = "text" | "ocr";
@@ -24,6 +25,7 @@ type Picked = { id: string; name: string } & FileIdentity;
 
 export type FileSource =
   | (Picked & { status: "extracting" })
+  | (Picked & { status: "needsOcr"; pages: number })
   | (Picked & { status: "ocr"; done: number; total: number })
   | (Picked & { status: "ready" } & FileBody)
   | (Picked & { status: "error"; message: string });
@@ -111,13 +113,19 @@ export function decodeUtf8(bytes: ArrayBuffer | Uint8Array): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
+/** Spaces and line breaks are gaps in the caption. */
+function pdfPageGlyphs(page: string): number {
+  return page.replace(/\s/g, "").length;
+}
+
 /**
- * A PDF with nothing on its text layer is a scan. One readable character is
- * enough to trust the layer. Rasterising a file that already carries text
- * costs a vision call per page.
+ * A caption on a scanned page is not the document. Court downloads often leave
+ * a few lines of text and the rest of the page as an image. One page over the
+ * threshold means the author put the words in the file, so that layer is what
+ * we read.
  */
-export function pdfHasTextLayer(pages: string[]): boolean {
-  return pages.some((page) => page.trim().length > 0);
+export function pdfNeedsOcr(pages: string[]): boolean {
+  return pages.every((page) => pdfPageGlyphs(page) <= PDF_SPARSE_PAGE_CHARS);
 }
 
 export function pdfPagesToText(pages: string[], origin: FileOrigin = "text"): FileBody {

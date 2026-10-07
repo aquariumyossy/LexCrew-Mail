@@ -12,6 +12,14 @@ export const MAIL_ATTACH_HINT =
 
 const QUIET_ERRORS = new Set(["メールが選択されていません。", "添付を読めるメールがありません。"]);
 
+/** Suffix for a mail chip that lists more than one file. Reading wins, then failure, then a scan that is waiting. */
+export function mailChipNote(state: { reading: string | null; waiting: number; failed: number }): string {
+  if (state.reading) return `・${state.reading}`;
+  if (state.failed > 0) return `・${state.failed.toLocaleString("ja-JP")} 件失敗`;
+  if (state.waiting > 0) return `・OCR待ち ${state.waiting.toLocaleString("ja-JP")} 件`;
+  return "";
+}
+
 export function planMailAttach(
   enabled: boolean,
   listed: { files: MailFileRef[]; error?: string },

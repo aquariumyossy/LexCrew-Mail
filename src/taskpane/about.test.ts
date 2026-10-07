@@ -34,6 +34,7 @@ describe("aboutCopy", () => {
       "ファイル",
       "履歴とコンテキスト",
     ]);
+    expect(aboutCopy.features.find((feature) => feature.title === "ファイル")?.body).toContain("OCR開始");
   });
 
   it("credits the developer", () => {

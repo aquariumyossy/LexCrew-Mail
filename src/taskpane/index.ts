@@ -36,9 +36,9 @@ import { countOutgoingTokens } from "../shared/meter";
 import { Memory, Party, renderMemorySection } from "../shared/memory";
 import { renderMailHeader, systemPrompt } from "../shared/prompts";
 import { ScopeRow, Settings, TextSetting, UiFontSize, adoptStoredConnection, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
-import { badgeLabel, ingestBytes, ingestFile, readErrorMessage } from "./files/attach";
+import { badgeLabel, ingestBytes, ingestFile, ocrScan, readErrorMessage } from "./files/attach";
 import { conversationKey, currentHostMode, listMailFiles, openThreadKey, outlookReady, readMailFile, readMailHeader, readParties } from "./host";
-import { MAIL_ATTACH_HINT, MailAttachPlan, planMailAttach } from "./mailAttach";
+import { HeldMailFile, MAIL_ATTACH_HINT, MailAttachPlan, mailChipNote, planMailAttach } from "./mailAttach";
 import { collectFreeSlots } from "./slots";
 import { renderMarkdown } from "./markdown";
 import { runTurn } from "./runTurn";
@@ -98,6 +98,8 @@ export function mount(root: HTMLElement): void {
   let turnAbort: AbortController | null = null;
   let pending: FileSource[] = [];
   let mailJobs: FileSource[] = [];
+  let declinedMail: HeldMailFile[] = [];
+  const scanBytes = new Map<string, ArrayBuffer>();
   let committed: CommittedFile[] = [];
   let memory: Memory = { notes: [], people: [] };
   let parties: Party[] = [];
@@ -941,10 +943,11 @@ export function mount(root: HTMLElement): void {
     input.addEventListener("change", () => {
       settings = { ...settings, readMailAttachments: input.checked };
       saveSettings(settings);
+      if (!settings.readMailAttachments) releaseWaitingMail();
       refreshMailAttachments();
     });
     choice.append(input, el("span", "メール添付ファイルを読む"));
-    wrap.append(choice, note("オンのとき、開いているメールに添付があれば自動で読みます。"));
+    wrap.append(choice, note("オンのとき、開いているメールのテキストは自動で読みます。画像と文字の少ない PDF は「OCR開始」を押したときだけ読みます。"));
     return wrap;
   }
 
@@ -1348,16 +1351,26 @@ export function mount(root: HTMLElement): void {
   function dropFiles(): void {
     for (const abort of fileAborts.values()) abort.abort();
     fileAborts.clear();
+    scanBytes.clear();
+    declinedMail = [];
     pending = [];
     mailJobs = [];
     committed = [];
     mailGuide = false;
   }
 
+  function noteRemoteOcr(): void {
+    if (remoteWarned) return;
+    remoteWarned = true;
+    banner = { kind: "warning", text: REMOTE_OCR_NOTICE };
+    paint();
+  }
+
   function putMail(source: FileSource): void {
     if (!mailJobs.some((row) => row.id === source.id)) {
       return;
     }
+    if (source.status !== "needsOcr") scanBytes.delete(source.id);
     if (source.status === "ready") {
       mailJobs = mailJobs.filter((row) => row.id !== source.id);
       fileAborts.delete(source.id);
@@ -1371,6 +1384,17 @@ export function mount(root: HTMLElement): void {
     paint();
   }
 
+  function releaseWaitingMail(): void {
+    const waiting = mailJobs.filter((row) => row.status === "needsOcr");
+    if (!waiting.length) return;
+    for (const row of waiting) {
+      scanBytes.delete(row.id);
+      fileAborts.delete(row.id);
+    }
+    mailJobs = mailJobs.filter((row) => row.status !== "needsOcr");
+    paint();
+  }
+
   function refreshMailAttachments(): void {
     if (!outlookReady() || busy || pending.some(isPending) || mailJobs.some(isPending)) return;
     let listed: { files: { index: number; name: string; size: number }[]; error?: string };
@@ -1380,7 +1404,7 @@ export function mount(root: HTMLElement): void {
       publishMailDecision({ kind: "error", text: error instanceof Error ? error.message : "添付を読めません。" });
       return;
     }
-    const held = [...committed.filter((file) => file.via === "mail"), ...mailJobs].map((row) => ({
+    const held = [...committed.filter((file) => file.via === "mail"), ...mailJobs, ...declinedMail].map((row) => ({
       name: row.name,
       size: row.size,
     }));
@@ -1467,18 +1491,53 @@ export function mount(root: HTMLElement): void {
         settings,
         signal: abort.signal,
         onUpdate: putMail,
-        onRemote: () => {
-          if (remoteWarned) return;
-          remoteWarned = true;
-          banner = { kind: "warning", text: REMOTE_OCR_NOTICE };
-          paint();
-        },
+        onRemote: noteRemoteOcr,
+        deferScan: true,
       });
+      const waiting = mailJobs.find((row) => row.id === base.id && row.status === "needsOcr");
+      if (!waiting) return;
+      if (!settings.readMailAttachments) {
+        fileAborts.delete(base.id);
+        mailJobs = mailJobs.filter((row) => row.id !== base.id);
+        paint();
+        return;
+      }
+      scanBytes.set(base.id, bytes);
     } catch (error) {
       fileAborts.delete(base.id);
       if (abort.signal.aborted) return;
       putMail({ ...base, status: "error", message: readErrorMessage(error) });
     }
+  }
+
+  function startMailOcr(id: string): void {
+    if (busy) return;
+    const source = mailJobs.find((row) => row.id === id);
+    if (!source || source.status !== "needsOcr") return;
+    const bytes = scanBytes.get(id);
+    const base = { id: source.id, name: source.name, size: source.size, mtime: source.mtime };
+    if (!bytes) {
+      putMail({ ...base, status: "error", message: "添付の中身を取り出せませんでした。外すと読み直します。" });
+      return;
+    }
+    const pages = source.pages;
+    const abort = new AbortController();
+    fileAborts.set(id, abort);
+    putMail({ ...base, status: "ocr", done: 0, total: pages });
+    void ocrScan({
+      name: source.name,
+      bytes,
+      base,
+      pages,
+      settings,
+      signal: abort.signal,
+      onUpdate: putMail,
+      onRemote: noteRemoteOcr,
+    }).catch((error) => {
+      fileAborts.delete(id);
+      if (abort.signal.aborted) return;
+      putMail({ ...base, status: "error", message: readErrorMessage(error) });
+    });
   }
 
   function putFile(source: FileSource): void {
@@ -1512,12 +1571,7 @@ export function mount(root: HTMLElement): void {
         settings,
         signal: abort.signal,
         onUpdate: putFile,
-        onRemote: () => {
-          if (remoteWarned) return;
-          remoteWarned = true;
-          banner = { kind: "warning", text: REMOTE_OCR_NOTICE };
-          paint();
-        },
+        onRemote: noteRemoteOcr,
       }).catch((error) => {
         fileAborts.delete(base.id);
         if (abort.signal.aborted) return;
@@ -1576,6 +1630,13 @@ export function mount(root: HTMLElement): void {
       }
       const failed = !reading && mailJobs.some((row) => row.status === "error");
       composer.mailBadges.append(fileChip("mail", mailChipLabel(mailJobs, mailKept), failed ? "danger" : ""));
+      const waiting = mailJobs.filter((row) => row.status === "needsOcr");
+      if (waiting.length) {
+        const title = waiting.length > 1 ? `待ち ${waiting.length.toLocaleString("ja-JP")} 件を読む` : undefined;
+        composer.mailBadges.append(ocrStartButton(busy, () => {
+          for (const row of waiting) startMailOcr(row.id);
+        }, title));
+      }
     }
     if (mailGuide) {
       const hint = el("p", MAIL_ATTACH_HINT);
@@ -1649,6 +1710,8 @@ export function mount(root: HTMLElement): void {
       preview: source.status === "ready" ? source : null,
       remove: () => removeMail(source.id),
       locked: false,
+      start: source.status === "needsOcr" ? () => startMailOcr(source.id) : undefined,
+      startDisabled: busy,
     }));
     const kept = committed.filter((file) => file.via === "mail").map((file) => ({
       id: file.id,
@@ -1663,8 +1726,13 @@ export function mount(root: HTMLElement): void {
   }
 
   function removeMail(id: string): void {
+    const source = mailJobs.find((row) => row.id === id);
     fileAborts.get(id)?.abort();
     fileAborts.delete(id);
+    scanBytes.delete(id);
+    if (source?.status === "needsOcr") {
+      declinedMail = [...declinedMail, { name: source.name, size: source.size }];
+    }
     mailJobs = mailJobs.filter((row) => row.id !== id);
     paint();
   }
@@ -1734,7 +1802,8 @@ function mailChipLabel(jobs: FileSource[], kept: CommittedFile[]): string {
   }
   const reading = items.find((item) => item.reading);
   const failed = items.filter((item) => item.failed).length;
-  const note = reading ? `・${reading.detail}` : failed ? `・${failed.toLocaleString("ja-JP")} 件失敗` : "";
+  const waiting = jobs.filter((source) => source.status === "needsOcr").length;
+  const note = mailChipNote({ reading: reading ? reading.detail : null, waiting, failed });
   return `添付 ${items.length.toLocaleString("ja-JP")} 件${note}`;
 }
 
@@ -1750,7 +1819,17 @@ function pendingChipLabel(rows: FileSource[]): string {
   return `添付 ${rows.length.toLocaleString("ja-JP")} 件${note}`;
 }
 
-function fileList(rows: Array<{ id: string; name: string; detail: string; failed: boolean; preview: { name: string; origin: "text" | "ocr"; body: string; truncated: boolean } | null; remove: () => void; locked: boolean }>, onPreview: (file: { name: string; origin: "text" | "ocr"; body: string; truncated: boolean }) => void): HTMLElement {
+function ocrStartButton(disabled: boolean, onClick: () => void, title?: string): HTMLButtonElement {
+  const start = el("button", "OCR開始");
+  start.type = "button";
+  start.className = "file-chip file-ocr";
+  start.disabled = disabled;
+  if (title) start.title = title;
+  start.addEventListener("click", onClick);
+  return start;
+}
+
+function fileList(rows: Array<{ id: string; name: string; detail: string; failed: boolean; preview: { name: string; origin: "text" | "ocr"; body: string; truncated: boolean } | null; remove: () => void; locked: boolean; start?: () => void; startDisabled?: boolean }>, onPreview: (file: { name: string; origin: "text" | "ocr"; body: string; truncated: boolean }) => void): HTMLElement {
   const list = el("div");
   list.className = "file-pop";
   for (const row of rows) {
@@ -1772,7 +1851,9 @@ function fileList(rows: Array<{ id: string; name: string; detail: string; failed
     drop.className = "file-drop";
     drop.disabled = row.locked;
     drop.addEventListener("click", row.remove);
-    line.append(name, detail, drop);
+    line.append(name, detail);
+    if (row.start) line.append(ocrStartButton(Boolean(row.startDisabled), row.start));
+    line.append(drop);
     list.append(line);
   }
   return list;
@@ -2194,6 +2275,8 @@ function css(): string {
     .file-chip { border: 0; background: #e8f3fb; color: #0e344e; border-radius: 999px; font-size: 0.857rem; line-height: 18px; padding: 1px 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
     .file-chip.kept { background: #f2f2f2; color: #333; }
     .file-chip.danger { background: #fde7e9; color: #bc2f32; }
+    .file-chip:disabled { color: #888; background: #f2f2f2; cursor: default; }
+    .file-ocr { flex: none; }
     .file-pop { position: absolute; z-index: 4; bottom: calc(100% + 4px); left: 0; background: #fff; border: 1px solid #d0d0d0; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,.12); padding: 4px; min-width: 200px; max-width: 260px; max-height: 40vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
     .file-row { display: flex; align-items: center; gap: 4px; }
     .file-name { flex: 1; min-width: 0; border: 0; background: transparent; text-align: left; font-size: 0.857rem; padding: 2px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

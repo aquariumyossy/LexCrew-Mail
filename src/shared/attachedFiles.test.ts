@@ -7,8 +7,9 @@ import {
   splitHistoryFiles,
   modelTurnText,
   parseCommittedFiles,
-  pdfHasTextLayer,
+  pdfNeedsOcr,
   pdfPagesToText,
+  isPending,
   rejectReason,
   sameFile,
   tooManyFiles,
@@ -29,15 +30,28 @@ function file(name: string, body: string, over: Partial<CommittedFile> = {}): Co
 }
 
 describe("pdf text layer", () => {
-  it("treats one readable character as a text layer", () => {
-    expect(pdfHasTextLayer(["", " あ"])).toBe(true);
-    expect(pdfHasTextLayer(["", "  \n"])).toBe(false);
+  it("needs OCR when every page has at most 200 glyphs", () => {
+    expect(pdfNeedsOcr(["", " あ"])).toBe(true);
+    expect(pdfNeedsOcr(["", "  \n"])).toBe(true);
+    expect(pdfNeedsOcr([])).toBe(true);
+    expect(pdfNeedsOcr(["あ".repeat(200)])).toBe(true);
+    expect(pdfNeedsOcr(["あ".repeat(50) + " \n\t　" + "い".repeat(150)])).toBe(true);
+    expect(pdfNeedsOcr(["あ".repeat(201)])).toBe(false);
+    expect(pdfNeedsOcr(["あ".repeat(200), "い".repeat(201)])).toBe(false);
   });
 
   it("joins pages with a blank line and drops an empty page", () => {
     const read = pdfPagesToText(["第1条", "", "第2条"], "ocr");
     expect(read.origin).toBe("ocr");
     expect(read.body).toBe("第1条\n\n第2条");
+  });
+});
+
+describe("mail scan wait", () => {
+  it("is not a pending read", () => {
+    expect(isPending({ id: "a", name: "a.pdf", size: 1, mtime: 0, status: "needsOcr", pages: 3 })).toBe(false);
+    expect(isPending({ id: "a", name: "a.pdf", size: 1, mtime: 0, status: "extracting" })).toBe(true);
+    expect(isPending({ id: "a", name: "a.pdf", size: 1, mtime: 0, status: "ocr", done: 1, total: 3 })).toBe(true);
   });
 });
 

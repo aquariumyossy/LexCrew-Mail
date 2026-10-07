@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SETTINGS_STORAGE_KEY } from "../shared/constants";
 import { loadSettings, normalizeReadMailAttachments } from "./api";
-import { planMailAttach } from "./mailAttach";
+import { planMailAttach, mailChipNote } from "./mailAttach";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -50,6 +50,15 @@ describe("loadSettings mail font", () => {
     expect(loadSettings()).toMatchObject({ mailFontId: "meiryo", mailFontSizePt: 12 });
     stubSettings(JSON.stringify({ mailFontId: "no", mailFontSizePt: 10.2 }));
     expect(loadSettings()).toMatchObject({ mailFontId: "yu-gothic", mailFontSizePt: 10.5 });
+  });
+});
+
+describe("mailChipNote", () => {
+  it("names a waiting scan only when nothing is reading or failing", () => {
+    expect(mailChipNote({ reading: "読み取り中", waiting: 2, failed: 1 })).toBe("・読み取り中");
+    expect(mailChipNote({ reading: null, waiting: 2, failed: 1 })).toBe("・1 件失敗");
+    expect(mailChipNote({ reading: null, waiting: 2, failed: 0 })).toBe("・OCR待ち 2 件");
+    expect(mailChipNote({ reading: null, waiting: 0, failed: 0 })).toBe("");
   });
 });
 
