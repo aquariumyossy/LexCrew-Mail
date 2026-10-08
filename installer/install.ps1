@@ -7,8 +7,9 @@ $source = $PSScriptRoot
 $target = Join-Path $env:LOCALAPPDATA "Programs\KURU"
 $version = (Get-Content (Join-Path $source "version.txt") -Raw).Trim()
 $webviewUrl = "https://developer.microsoft.com/microsoft-edge/webview2/"
-
-$regasm = Join-Path ${env:WINDIR} "Microsoft.NET\Framework64\v4.0.30319\RegAsm.exe"
+$packageBitness = "x64"
+$marker = Join-Path $source "addin\bitness.txt"
+if (Test-Path $marker) { $packageBitness = (Get-Content $marker -Raw).Trim() }
 
 function Fail([string]$text, [int]$code = 1) {
   Write-Host ""
@@ -39,8 +40,21 @@ foreach ($ver in @("16.0", "15.0")) {
   $b = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Office\$ver\Outlook" -ErrorAction SilentlyContinue).Bitness
   if ($b) { $bitness = $b }
 }
-if ($bitness -and $bitness -notmatch "64") {
-  Fail "この Outlook は 32 ビット版です。LexCrew Mail は 64 ビット版の Outlook にだけ対応しています。" 3
+if ($packageBitness -ne "x64" -and $packageBitness -ne "x86") {
+  Fail "bitness.txt が不正です。" 1
+}
+if ($packageBitness -eq "x86") {
+  if ($bitness -match "64") {
+    Fail "この Outlook は 64 ビット版です。このパッケージは 32 ビット版の Outlook 用です。" 3
+  }
+  $regasm = Join-Path ${env:WINDIR} "Microsoft.NET\Framework\v4.0.30319\RegAsm.exe"
+  $classesPrefix = "HKEY_CURRENT_USER\Software\Classes\Wow6432Node\"
+} else {
+  if ($bitness -and $bitness -notmatch "64") {
+    Fail "この Outlook は 32 ビット版です。LexCrew Mail は 64 ビット版の Outlook にだけ対応しています。" 3
+  }
+  $regasm = Join-Path ${env:WINDIR} "Microsoft.NET\Framework64\v4.0.30319\RegAsm.exe"
+  $classesPrefix = "HKEY_CURRENT_USER\Software\Classes\"
 }
 
 $webview = @(
@@ -78,13 +92,18 @@ try {
 $dll = Join-Path $target "addin\KuruOutlook.dll"
 $regFile = Join-Path $env:TEMP "kuru-install.reg"
 if (-not (Test-Path $regasm)) { Fail "RegAsm.exe が見つかりません。" 5 }
-foreach ($key in @(
-  "HKCU:\Software\Classes\CLSID\{A7B3C1D2-4E5F-4A6B-8C9D-0E1F2A3B4C5D}",
-  "HKCU:\Software\Classes\CLSID\{B8C4D2E3-5F60-4B7C-9D0E-1F2A3B4C5D6E}",
-  "HKCU:\Software\Classes\Kuru.Connect",
-  "HKCU:\Software\Classes\Kuru.Pane"
-)) {
-  if (Test-Path $key) { Remove-Item $key -Recurse -Force }
+# 64bit 側と 32bit 側の両方を消す。ビット幅を入れ替えて入れ直したとき、古い InprocServer32 を残さない。
+$classNames = @(
+  "CLSID\{A7B3C1D2-4E5F-4A6B-8C9D-0E1F2A3B4C5D}",
+  "CLSID\{B8C4D2E3-5F60-4B7C-9D0E-1F2A3B4C5D6E}",
+  "Kuru.Connect",
+  "Kuru.Pane"
+)
+foreach ($view in @("HKCU:\Software\Classes", "HKCU:\Software\Classes\Wow6432Node")) {
+  foreach ($name in $classNames) {
+    $key = Join-Path $view $name
+    if (Test-Path $key) { Remove-Item $key -Recurse -Force }
+  }
 }
 # RegAsm と reg は正常時も標準エラーに書くため、PowerShell の例外にならないよう cmd 経由で呼ぶ
 cmd /c "`"$regasm`" /unregister `"$dll`" >nul 2>&1"
@@ -92,9 +111,13 @@ cmd /c "`"$regasm`" /regfile:`"$regFile`" /codebase `"$dll`" >nul 2>&1"
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $regFile)) {
   Fail "COM 登録ファイルを作成できませんでした。" 6
 }
-# HKEY_CLASSES_ROOT のままだと、HKCU に既存キーが無いとき HKLM へ書こうとして管理者権限が要る
+# HKEY_CLASSES_ROOT のままだと、HKCU に既存キーが無いとき HKLM へ書こうとして管理者権限が要る。
+# x86 パッケージは 32bit Outlook が見る Wow6432Node へ書く。64bit の reg import はそのパスをそのまま書く。
 $regText = [IO.File]::ReadAllText($regFile, [Text.Encoding]::Default)
-[IO.File]::WriteAllText($regFile, $regText.Replace("[HKEY_CLASSES_ROOT\", "[HKEY_CURRENT_USER\Software\Classes\"), [Text.Encoding]::Default)
+if ($packageBitness -eq "x86") {
+  $regText = $regText.Replace("[HKEY_CLASSES_ROOT\Wow6432Node\", "[HKEY_CURRENT_USER\Software\Classes\Wow6432Node\")
+}
+[IO.File]::WriteAllText($regFile, $regText.Replace("[HKEY_CLASSES_ROOT\", "[$classesPrefix"), [Text.Encoding]::Default)
 cmd /c "reg import `"$regFile`" >nul 2>&1"
 if ($LASTEXITCODE -ne 0) { Fail "COM 登録に失敗しました。" 7 }
 Remove-Item $regFile -Force -ErrorAction SilentlyContinue

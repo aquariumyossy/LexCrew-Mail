@@ -121,7 +121,6 @@ namespace KuruOutlook
                         if (Listening()) return true;
                         Thread.Sleep(100);
                     }
-                    return false;
                 }
                 return LaunchOrThrow(node, script);
             }

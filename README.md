@@ -68,6 +68,7 @@ Outlook（COM アドイン） ── window.kuru ──► 作業ウィンドウ
 
 - **OS** … Windows 10 / 11（64bit）
 - **Outlook** … 64 ビット版の Outlook クラシック（Microsoft 365 / 永続ライセンスなど）
+- **32 ビット版 Outlook** … 64bit の Windows に入っている 32 ビット版の Outlook クラシックには、x86 用の配布物を使う
 - **WebView2** … 未インストールの場合はインストーラの案内に従って追加
 - **LLM** … OpenAI 互換 API（例: ローカルの MTPLX など）。URL と API キーを設定画面で指定
 - **任意** … SearXNG、Argos（ローカル索引）
@@ -99,6 +100,7 @@ npm run dev-server    # 開発用 HTTPS + webpack（https://127.0.0.1:28770）
 npm test              # Vitest
 npm run build         # フロントを dist/ にビルド
 npm run package       # release/ にインストーラ一式を生成（要 Windows）
+npm run package:x86   # 32 ビット版 Outlook 向けの配布物を release/ に生成
 ```
 
 ### 主なディレクトリ

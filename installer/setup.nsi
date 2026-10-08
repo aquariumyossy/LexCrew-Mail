@@ -18,6 +18,9 @@
 !ifndef ICON
   !error "ICON is required"
 !endif
+!ifndef BITNESS
+  !define BITNESS "x64"
+!endif
 
 Name "LexCrew Mail"
 Caption "LexCrew Mail セットアップ"
@@ -88,7 +91,11 @@ Function ExplainInstallFailure
   ${If} $0 = 2
     MessageBox MB_ICONEXCLAMATION "Outlook を終了してから、もう一度インストールしてください。"
   ${ElseIf} $0 = 3
+    !if "${BITNESS}" == "x86"
+    MessageBox MB_ICONSTOP "この Outlook は 64 ビット版です。このパッケージは 32 ビット版の Outlook 用です。"
+    !else
     MessageBox MB_ICONSTOP "この Outlook は 32 ビット版です。LexCrew Mail は 64 ビット版の Outlook にだけ対応しています。"
+    !endif
   ${ElseIf} $0 = 4
     MessageBox MB_ICONEXCLAMATION "WebView2 ランタイムが見つかりません。LexCrew Mail の画面を出すには、次から入れてから、もう一度インストールしてください。$\n$\nhttps://developer.microsoft.com/microsoft-edge/webview2/"
   ${ElseIf} $0 = 5

@@ -338,7 +338,7 @@ namespace KuruOutlook
         {
             for (int i = 0; i < 300; i++)
             {
-                if (Sidecar.Listening())
+                if (await Task.Run((Func<bool>)Sidecar.Listening))
                 {
                     NavigateFresh();
                     return;

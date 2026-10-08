@@ -22,6 +22,20 @@ class MailFilesTest
         {
             throw new Exception("visible rows " + kept.Count);
         }
+        string stamp = MailFiles.Stamp("entry", rows);
+        if (stamp.Length == 0 || stamp != MailFiles.Stamp("entry", rows))
+        {
+            throw new Exception("stamp unstable");
+        }
+        if (MailFiles.Stamp("", rows) != "" || MailFiles.Stamp("other", rows) == stamp)
+        {
+            throw new Exception("stamp identity");
+        }
+        rows[1].Size = 41;
+        if (MailFiles.Stamp("entry", rows) == stamp)
+        {
+            throw new Exception("stamp ignored size");
+        }
         return 0;
     }
 

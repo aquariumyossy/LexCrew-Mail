@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 
 namespace KuruOutlook
 {
@@ -29,6 +30,25 @@ namespace KuruOutlook
                 return false;
             }
             return html.IndexOf("cid:" + id, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        public static string Stamp(string entryId, IList<MailFileRow> rows)
+        {
+            if (string.IsNullOrEmpty(entryId) || rows == null)
+            {
+                return "";
+            }
+            var text = new StringBuilder(entryId);
+            for (int i = 0; i < rows.Count; i++)
+            {
+                MailFileRow row = rows[i];
+                if (row == null)
+                {
+                    continue;
+                }
+                text.Append('\n').Append(row.Index).Append('\t').Append(row.Name ?? "").Append('\t').Append(row.Size).Append('\t').Append(row.ContentId ?? "");
+            }
+            return text.ToString();
         }
 
         public static List<MailFileRow> Visible(IEnumerable<MailFileRow> rows, string html)

@@ -10,6 +10,8 @@ namespace KuruOutlook
     {
         const string SmtpTag = "http://schemas.microsoft.com/mapi/proptag/0x39FE001F";
         readonly object _window;
+        string _fileStamp;
+        string _fileList;
 
         public MailBridge(object window)
         {
@@ -18,6 +20,7 @@ namespace KuruOutlook
 
         public string GetContext()
         {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 bool inspector;
@@ -41,6 +44,10 @@ namespace KuruOutlook
             catch (Exception ex)
             {
                 return "{\"mode\":\"none\",\"conversationId\":\"\",\"error\":\"" + Json(ex.Message) + "\"}";
+            }
+            finally
+            {
+                Log("GetContext " + clock.ElapsedMilliseconds + "ms");
             }
         }
 
@@ -149,6 +156,8 @@ namespace KuruOutlook
 
         public string ListMailFiles()
         {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            string how = "skip";
             try
             {
                 bool inspector;
@@ -162,7 +171,6 @@ namespace KuruOutlook
                 {
                     return "{\"error\":\"添付を読めるメールがありません。\"}";
                 }
-                string html = SafeString(() => item.HTMLBody);
                 dynamic attachments = item.Attachments;
                 int count = 0;
                 try
@@ -205,6 +213,13 @@ namespace KuruOutlook
                         ContentId = ContentId(attachment)
                     });
                 }
+                string stamp = MailFiles.Stamp(SafeString(() => item.EntryID), rows);
+                if (stamp.Length > 0 && stamp == _fileStamp)
+                {
+                    how = "cache";
+                    return _fileList;
+                }
+                string html = SafeString(() => item.HTMLBody);
                 var visible = MailFiles.Visible(rows, html);
                 var files = new System.Collections.Generic.List<object>();
                 foreach (MailFileRow row in visible)
@@ -216,14 +231,26 @@ namespace KuruOutlook
                         { "size", row.Size }
                     });
                 }
-                return new JavaScriptSerializer().Serialize(new System.Collections.Generic.Dictionary<string, object>
+                string json = new JavaScriptSerializer().Serialize(new System.Collections.Generic.Dictionary<string, object>
                 {
                     { "files", files }
                 });
+                if (stamp.Length > 0)
+                {
+                    _fileStamp = stamp;
+                    _fileList = json;
+                }
+                how = "html";
+                return json;
             }
             catch (Exception ex)
             {
+                how = "error";
                 return "{\"error\":\"" + Json(ex.Message) + "\"}";
+            }
+            finally
+            {
+                Log("ListMailFiles " + clock.ElapsedMilliseconds + "ms " + how);
             }
         }
 
@@ -1130,6 +1157,17 @@ namespace KuruOutlook
         static string Json(string value)
         {
             return (value ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        static void Log(string text)
+        {
+            try
+            {
+                System.IO.File.AppendAllText(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kuru-addin.log"), DateTime.Now.ToString("HH:mm:ss ") + text + Environment.NewLine);
+            }
+            catch
+            {
+            }
         }
     }
 }

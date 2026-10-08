@@ -1,6 +1,6 @@
 {
   "name": "kuru",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "private": true,
   "author": "弁護士　吉田秀平",
   "license": "Elastic-2.0",
@@ -10,7 +10,8 @@
     "build": "webpack --mode production",
     "test": "vitest run",
     "certs": "office-addin-dev-certs install",
-    "package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1"
+    "package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1",
+    "package:x86": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Platform x86"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
