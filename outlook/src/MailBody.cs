@@ -7,21 +7,7 @@ namespace KuruOutlook
     {
         public static string VisibleText(string html)
         {
-            if (string.IsNullOrEmpty(html))
-            {
-                return "";
-            }
-            string text = html;
-            text = StripBlock(text, "head");
-            text = StripBlock(text, "style");
-            text = StripBlock(text, "script");
-            text = Regex.Replace(text, "<[^>]+>", " ");
-            text = text.Replace("&nbsp;", " ");
-            text = text.Replace("&amp;", "&");
-            text = text.Replace("&lt;", "<");
-            text = text.Replace("&gt;", ">");
-            text = Regex.Replace(text, @"\s+", " ");
-            return text.Trim();
+            return MailHtml.ToPlain(html);
         }
 
         public static string SplicePreface(string html, string preface, MailFont font)
@@ -89,21 +75,7 @@ namespace KuruOutlook
 
         static string FormatPreface(string preface, MailFont font)
         {
-            string inner;
-            if (string.IsNullOrEmpty(preface))
-            {
-                inner = "<p></p>";
-            }
-            else if (Regex.IsMatch(preface, @"<[A-Za-z/!]"))
-            {
-                inner = preface;
-            }
-            else
-            {
-                string escaped = preface.Replace("&", "&amp;").Replace("<", "&lt;");
-                escaped = escaped.Replace("\r\n", "\n").Replace("\n", "<br>");
-                inner = "<p>" + escaped + "</p>";
-            }
+            string inner = MailHtml.Sanitize(preface);
             return Stamp("<div>" + inner + "</div>", font);
         }
 

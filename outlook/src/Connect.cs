@@ -243,6 +243,8 @@ namespace KuruOutlook
         readonly object _window;
         readonly WebView2 _web = new WebView2();
         bool _retryingSidecar;
+        bool _scriptReady;
+        int _navGate;
 
         public static void Reload(long key)
         {
@@ -273,7 +275,7 @@ namespace KuruOutlook
                 CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(null, folder);
                 await _web.EnsureCoreWebView2Async(env);
                 _web.CoreWebView2.AddHostObjectToScript("bridge", new MailBridge(_window));
-                await _web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(HostScript);
+                BindTaskPaneGuards();
                 _web.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
                 _web.CoreWebView2.ServerCertificateErrorDetected += (s, args) =>
                 {
@@ -318,7 +320,7 @@ namespace KuruOutlook
                 _retryingSidecar = false;
                 try
                 {
-                    await _web.CoreWebView2.ExecuteScriptAsync(HostScript);
+                    await _web.CoreWebView2.ExecuteScriptAsync(HostScriptNow());
                 }
                 catch (Exception ex)
                 {
@@ -349,10 +351,111 @@ namespace KuruOutlook
             _retryingSidecar = false;
         }
 
-        void NavigateFresh()
+        async void NavigateFresh()
         {
             if (_web.CoreWebView2 == null) return;
-            _web.CoreWebView2.Navigate("https://127.0.0.1:28770/taskpane.html?v=" + DateTime.UtcNow.Ticks);
+            if (System.Threading.Interlocked.Exchange(ref _navGate, 1) == 1) return;
+            try
+            {
+                if (ReadSessionToken().Length == 0)
+                {
+                    await WaitForSessionTokenAsync();
+                }
+                if (_web.CoreWebView2 == null) return;
+                if (!_scriptReady)
+                {
+                    _scriptReady = true;
+                    try
+                    {
+                        await _web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(HostScriptNow());
+                    }
+                    catch (Exception ex)
+                    {
+                        _scriptReady = false;
+                        Log(ex.Message);
+                        return;
+                    }
+                }
+                if (_web.CoreWebView2 == null) return;
+                _web.CoreWebView2.Navigate("https://127.0.0.1:28770/taskpane.html?v=" + DateTime.UtcNow.Ticks);
+            }
+            catch (Exception ex)
+            {
+                Log(ex.Message);
+            }
+            finally
+            {
+                System.Threading.Interlocked.Exchange(ref _navGate, 0);
+            }
+        }
+
+        void BindTaskPaneGuards()
+        {
+            CoreWebView2 core = _web.CoreWebView2;
+            core.NavigationStarting += (s, args) =>
+            {
+                if (!TaskPaneNavigation.Allow(args.Uri)) args.Cancel = true;
+            };
+            core.FrameNavigationStarting += (s, args) =>
+            {
+                if (!TaskPaneNavigation.Allow(args.Uri)) args.Cancel = true;
+            };
+            core.NewWindowRequested += (s, args) =>
+            {
+                args.Handled = true;
+            };
+            core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+            core.WebResourceRequested += (s, args) =>
+            {
+                string uri = args.Request == null ? "" : args.Request.Uri;
+                if (!TaskPaneNavigation.Allow(uri))
+                {
+                    args.Response = core.Environment.CreateWebResourceResponse(new MemoryStream(), 403, "Forbidden", "Content-Type: text/plain\r\n");
+                    return;
+                }
+                string token = ReadSessionToken();
+                if (token.Length > 0 && args.Request != null)
+                {
+                    args.Request.Headers.SetHeader("X-LexCrew-Token", token);
+                }
+            };
+        }
+
+        static string HostScriptNow()
+        {
+            return "window.kuruToken='" + ReadSessionToken() + "';" + HostScript;
+        }
+
+        static async Task WaitForSessionTokenAsync()
+        {
+            for (int i = 0; i < 300; i++)
+            {
+                if (ReadSessionToken().Length > 0) return;
+                await Task.Delay(100);
+            }
+            Log("session token missing");
+        }
+
+        static string ReadSessionToken()
+        {
+            try
+            {
+                string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "KURU", "session.token");
+                if (!File.Exists(path)) return "";
+                string token = File.ReadAllText(path).Trim();
+                if (token.Length < 32 || token.Length > 128) return "";
+                for (int i = 0; i < token.Length; i++)
+                {
+                    char c = token[i];
+                    bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                    if (!hex) return "";
+                }
+                return token;
+            }
+            catch
+            {
+                return "";
+            }
         }
 
         static long WindowKey(object window)

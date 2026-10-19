@@ -87,7 +87,7 @@ export function buildTools(options: { searxng: boolean; argos: boolean }): ToolD
       function: {
         name: TOOL_APPLY_DRAFT,
         description:
-          "作成ウィンドウの件名と宛先を置き換え、本文は新しい前文だけを差し替える。閲覧中は書かない。bodyHtml は新しい前文だけ。署名と引用は含めない。宛先を変えてほしいと頼まれたとき以外は、to と cc を省略する。省略するとその欄は残る。空の配列を渡すとその欄を空にする。",
+          "作成ウィンドウの件名と宛先を置き換え、本文は新しい前文だけを差し替える。閲覧中は書かない。bodyHtml は新しい前文だけ。署名と引用は含めない。宛先を変えてほしいと頼まれたとき以外は、to と cc を省略する。省略するとその欄は残る。空の配列を渡すとその欄を空にする。to と cc は今のスレッドの参加者だけ。件名、宛先、CC を変えるときは利用者が確認するまで書き込まれない。",
         parameters: draftParams,
       },
     },
@@ -124,7 +124,7 @@ export function buildTools(options: { searxng: boolean; argos: boolean }): ToolD
       type: "function",
       function: {
         name: TOOL_SEARCH,
-        description: "SearXNG で公開ウェブを検索する。",
+        description: "SearXNG で公開ウェブを検索する。検索語は利用者が確認してから送られる。",
         parameters: queryParams,
       },
     });
@@ -203,10 +203,9 @@ function shorten(text: string, max: number): string {
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max)}…`;
 }
 
-/** 0 means keep calling tools until the model answers or the user cancels. */
-export const UNLIMITED_TOOL_ROUNDS = 0;
-export const MAX_MAX_TOOL_ROUNDS = 256;
-export const TOOL_ROUND_PRESETS = [8, 16, 32, UNLIMITED_TOOL_ROUNDS] as const;
+/** Highest finite tool-round cap. Stored 0 used to mean unlimited and now means this cap. */
+export const MAX_MAX_TOOL_ROUNDS = 32;
+export const TOOL_ROUND_PRESETS = [8, 16, 32] as const;
 
 export function normalizeMaxToolRounds(value: unknown): number {
   if (value === undefined || value === null || value === "") {
@@ -217,16 +216,13 @@ export function normalizeMaxToolRounds(value: unknown): number {
     return MAX_TOOL_ROUNDS;
   }
   const rounded = Math.round(n);
-  if (rounded === UNLIMITED_TOOL_ROUNDS) {
-    return UNLIMITED_TOOL_ROUNDS;
+  if (rounded === 0) {
+    return MAX_MAX_TOOL_ROUNDS;
   }
   return Math.min(MAX_MAX_TOOL_ROUNDS, Math.max(1, rounded));
 }
 
 export function toolRoundPresetLabel(rounds: number): string {
-  if (rounds === UNLIMITED_TOOL_ROUNDS) {
-    return "制限なし";
-  }
   if (rounds === MAX_TOOL_ROUNDS) {
     return `${rounds}（既定）`;
   }

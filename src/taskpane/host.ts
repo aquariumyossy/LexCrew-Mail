@@ -199,8 +199,10 @@ export async function searchSentMail(query: string, address: string): Promise<{ 
   };
 }
 
-export async function writeDraft(draft: MailDraft, font: MailFontStamp): Promise<string> {
-  const result = bridge().writeDraft(JSON.stringify({ ...draft, mailFont: font }));
+export async function writeDraft(draft: MailDraft, font: MailFontStamp, options?: { headerApproved?: boolean }): Promise<string> {
+  const result = bridge().writeDraft(
+    JSON.stringify({ ...draft, mailFont: font, ...(options?.headerApproved ? { headerApproved: true } : {}) })
+  );
   if (result.startsWith("エラー:")) {
     throw new Error(result.slice("エラー:".length).trim());
   }

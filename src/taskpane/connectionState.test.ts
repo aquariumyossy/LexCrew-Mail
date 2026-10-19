@@ -28,6 +28,12 @@ describe("applyAdopt", () => {
     expect(settingsForStorage(applied.settings, applied.keepConnection)).toEqual(stored);
   });
 
+  it("keeps the key already in memory when the file does not echo it", () => {
+    const applied = applyAdopt(stored, { kind: "ready", llmBaseUrl: "http://file", searxngUrl: "", hasApiKey: true });
+    expect(applied.settings.llmApiKey).toBe("local-key");
+    expect(applied.settings.llmBaseUrl).toBe("http://file");
+  });
+
   it("does not keep empty keys when the file is absent", () => {
     const applied = applyAdopt(stored, { kind: "absent" });
     expect(applied.keepConnection).toBe(false);

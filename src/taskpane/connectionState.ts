@@ -5,7 +5,7 @@ export type ConnectionFields = {
 };
 
 export type ConnectionView =
-  | ({ kind: "ready" } & ConnectionFields)
+  | ({ kind: "ready"; hasApiKey?: boolean } & Partial<Pick<ConnectionFields, "llmApiKey">> & Omit<ConnectionFields, "llmApiKey">)
   | { kind: "absent" }
   | { kind: "broken" };
 
@@ -18,7 +18,7 @@ export function applyAdopt<T extends ConnectionFields>(
       settings: {
         ...settings,
         llmBaseUrl: result.llmBaseUrl,
-        llmApiKey: result.llmApiKey,
+        llmApiKey: typeof result.llmApiKey === "string" ? result.llmApiKey : settings.llmApiKey,
         searxngUrl: result.searxngUrl,
       },
       keepConnection: false,

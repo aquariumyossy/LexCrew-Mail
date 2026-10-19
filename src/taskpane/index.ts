@@ -29,12 +29,14 @@ import {
   sameFile,
   tooManyFiles,
 } from "../shared/attachedFiles";
+import { plainHttpLanWarning } from "../shared/endpoint";
+import { DraftChange, ThreadSnapshot } from "../shared/draftGate";
 import { REMOTE_OCR_NOTICE } from "../shared/ocr";
 import { THINKING_LEVELS, THINKING_LEVEL_LABELS } from "../shared/thinking";
 import { MAIL_FONTS, MAIL_FONT_SIZE_MAX, MAIL_FONT_SIZE_MIN, MAIL_FONT_SIZE_STEP, mailFontSizeFromInput, normalizeMailFontId } from "../shared/mailFont";
 import { countOutgoingTokens } from "../shared/meter";
 import { Memory, Party, renderMemorySection } from "../shared/memory";
-import { renderMailHeader, systemPrompt } from "../shared/prompts";
+import { renderMailData, renderMailRules, systemPrompt } from "../shared/prompts";
 import { ScopeRow, Settings, TextSetting, UiFontSize, adoptStoredConnection, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
 import { badgeLabel, ingestBytes, ingestFile, ocrScan, readErrorMessage } from "./files/attach";
 import { conversationKey, currentHostMode, listMailFiles, openThreadKey, outlookReady, readMailFile, readMailHeader, readParties } from "./host";
@@ -103,7 +105,8 @@ export function mount(root: HTMLElement): void {
   let committed: CommittedFile[] = [];
   let memory: Memory = { notes: [], people: [] };
   let parties: Party[] = [];
-  let mailHeader: Parameters<typeof renderMailHeader>[0] = null;
+  let mailHeader: Parameters<typeof renderMailRules>[0] = null;
+  let apiKeyOnFile = false;
   let openFileList: "pending" | "kept" | "mail" | null = null;
   let mailGuide = false;
   let mailNotice = "";
@@ -138,11 +141,16 @@ export function mount(root: HTMLElement): void {
   actions.append(historyBtn, memoryBtn, missing, connectBtn, scheduleBtn, settingsBtn, infoBtn);
   header.append(meter, actions);
 
+  const lanWarn = el("p");
+  lanWarn.className = "lan-warn";
+  lanWarn.hidden = true;
   const bannerHost = el("div");
+  const confirmHost = el("div");
+  confirmHost.hidden = true;
   const chat = el("div");
   chat.className = "chat";
   const composer = buildComposer();
-  app.append(header, bannerHost, chat, composer.box);
+  app.append(header, lanWarn, bannerHost, confirmHost, chat, composer.box);
   root.append(app);
 
   const dialog = buildDialog(root);
@@ -235,6 +243,7 @@ export function mount(root: HTMLElement): void {
   async function start(): Promise<void> {
     try {
       const result = await adoptStoredConnection(connectionFields(settings));
+      if (result.kind === "ready") apiKeyOnFile = Boolean(result.hasApiKey);
       settings = takeAdoptedSettings(settings, result);
       if (result.kind === "ready") saveSettings(settings);
     } catch {
@@ -253,6 +262,9 @@ export function mount(root: HTMLElement): void {
   }
 
   function paint(): void {
+    const lan = plainHttpLanWarning(settings.llmBaseUrl);
+    lanWarn.hidden = !lan;
+    lanWarn.textContent = lan ?? "";
     missing.hidden = Boolean(settings.llmBaseUrl.trim() && settings.llmApiKey.trim());
     bannerHost.textContent = "";
     if (banner) bannerHost.append(bannerView(banner, () => { banner = null; paint(); }));
@@ -293,6 +305,103 @@ export function mount(root: HTMLElement): void {
     mailHeader = readMailHeader();
   }
 
+  function currentThread(): ThreadSnapshot {
+    const header = readMailHeader();
+    return {
+      subject: header?.subject ?? "",
+      from: header?.from ?? "",
+      to: header?.to ?? [],
+      cc: header?.cc ?? [],
+      parties: readParties(),
+    };
+  }
+
+  const fieldLabel: Record<DraftChange["field"], string> = { subject: "件名", to: "宛先", cc: "CC" };
+
+  function askDraft(changes: DraftChange[]): Promise<boolean> {
+    return askConfirm((finish) => {
+      const box = el("div");
+      box.className = "confirm";
+      box.append(el("p", "件名または宛先を変えます"));
+      for (const change of changes) {
+        const block = el("div");
+        block.append(el("p", fieldLabel[change.field]));
+        block.append(el("p", `変更前: ${change.before}`));
+        block.append(el("p", `変更後: ${change.after}`));
+        box.append(block);
+      }
+      box.append(confirmActions(finish));
+      confirmHost.append(box);
+    }, false);
+  }
+
+  function askSearch(query: string): Promise<string | null> {
+    return askConfirm<string | null>((finish) => {
+      const box = el("div");
+      box.className = "confirm";
+      box.append(el("p", "ウェブ検索します"));
+      const input = document.createElement("input");
+      input.value = query;
+      input.setAttribute("aria-label", "検索語");
+      const row = el("div");
+      row.className = "confirm-actions";
+      const go = el("button", "検索");
+      go.type = "button";
+      go.className = "primary";
+      const cancel = el("button", "キャンセル");
+      cancel.type = "button";
+      const submit = () => finish(input.value);
+      go.addEventListener("click", submit);
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          submit();
+        }
+      });
+      cancel.addEventListener("click", () => finish(null));
+      row.append(go, cancel);
+      box.append(input, row);
+      confirmHost.append(box);
+      input.focus();
+    }, null);
+  }
+
+  function confirmActions(finish: (approved: boolean) => void): HTMLElement {
+    const row = el("div");
+    row.className = "confirm-actions";
+    const apply = el("button", "適用");
+    apply.type = "button";
+    apply.className = "primary";
+    const cancel = el("button", "キャンセル");
+    cancel.type = "button";
+    apply.addEventListener("click", () => finish(true));
+    cancel.addEventListener("click", () => finish(false));
+    row.append(apply, cancel);
+    return row;
+  }
+
+  function askConfirm<T>(render: (finish: (value: T) => void) => void, onAbort: T): Promise<T> {
+    confirmHost.hidden = false;
+    confirmHost.replaceChildren();
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (value: T) => {
+        if (done) return;
+        done = true;
+        confirmHost.hidden = true;
+        confirmHost.replaceChildren();
+        resolve(value);
+      };
+      const signal = turnAbort?.signal;
+      if (signal?.aborted) {
+        finish(onAbort);
+        return;
+      }
+      signal?.addEventListener("abort", () => finish(onAbort), { once: true });
+      render(finish);
+    });
+  }
+
   function refreshMeter(): void {
     const readyPending = pending.filter(isReady).map(commit);
     const tokens = countOutgoingTokens({
@@ -308,7 +417,8 @@ export function mount(root: HTMLElement): void {
       searxng: Boolean(settings.searxngUrl.trim()),
       argos: Boolean(settings.argosBaseUrl.trim()),
       memory: renderMemorySection(memory, parties),
-      mail: renderMailHeader(mailHeader),
+      mail: renderMailRules(mailHeader),
+      mailData: renderMailData(mailHeader),
     });
     const warn = settings.contextLimit > 0 && tokens / settings.contextLimit >= 0.8;
     meterCount.textContent = `${tokens.toLocaleString("ja-JP")} / ${settings.contextLimit.toLocaleString("ja-JP")}`;
@@ -417,14 +527,15 @@ export function mount(root: HTMLElement): void {
       const hasFiles = committed.length > 0;
       rememberMail();
       const memoryText = renderMemorySection(memory, parties);
-      const mailText = renderMailHeader(mailHeader);
+      const mailText = renderMailRules(mailHeader);
+      const mailData = renderMailData(mailHeader);
       const reserved = systemPrompt({
         files: hasFiles,
         searxng: Boolean(settings.searxngUrl.trim()),
         argos: Boolean(settings.argosBaseUrl.trim()),
         memory: memoryText,
         mail: mailText,
-      }).length + instruction.length;
+      }).length + mailData.length + instruction.length;
       const forModel = modelTurnText(instruction, committed, settings.contextLimit, reserved);
       const forHistory = historyTurnText(instruction, committed, settings.contextLimit, reserved);
       thread.push({ role: "user", content: forHistory });
@@ -439,7 +550,11 @@ export function mount(root: HTMLElement): void {
         hasFiles,
         memory: memoryText,
         mail: mailText,
+        mailData,
         pathPrefixes,
+        readThread: currentThread,
+        confirmDraft: askDraft,
+        confirmSearch: askSearch,
         signal: turnAbort.signal,
         onDelta: (snapshot) => {
           const draft = thread.find((row) => row.streaming);
@@ -693,6 +808,7 @@ export function mount(root: HTMLElement): void {
     try {
       const result = await fetchConnection();
       if (result.kind === "ready") {
+        apiKeyOnFile = Boolean(result.hasApiKey);
         settings = takeAdoptedSettings(settings, result);
         saveSettings(settings);
       }
@@ -895,7 +1011,7 @@ export function mount(root: HTMLElement): void {
       ),
       labeled(
         "ツール往復の上限",
-        "1回の指示あたり。コメントが多い点検は32か制限なし。上限に達するとチャットに知らせます。止まらなければキャンセルしてください。",
+        "1回の指示あたり。コメントが多い点検は32まで。上限に達するとチャットに知らせます。止まらなければキャンセルしてください。",
         choices(
           "tool-rounds",
           TOOL_ROUND_PRESETS.map((rounds) => ({ value: String(rounds), label: toolRoundPresetLabel(rounds) })),
@@ -1032,6 +1148,20 @@ export function mount(root: HTMLElement): void {
       const wrap = el("label");
       wrap.append(el("span", label), input);
       stack.append(wrap);
+      if (name === "llmBaseUrl") {
+        const warn = note("");
+        const refreshWarn = () => {
+          const text = plainHttpLanWarning(input.value);
+          warn.hidden = !text;
+          warn.textContent = text ?? "";
+        };
+        input.addEventListener("input", refreshWarn);
+        refreshWarn();
+        stack.append(warn);
+      }
+      if (name === "llmApiKey" && apiKeyOnFile && !settings.llmApiKey.trim()) {
+        input.placeholder = "保存済み（変えるときだけ入力）";
+      }
       if (name === "model" && models.length) {
         const row = el("div");
         row.className = "chips";
@@ -2231,6 +2361,12 @@ function css(): string {
     .icon svg, .banner svg { width: 16px; height: 16px; }
     .icon:hover { background: #f0f0f0; }
     .header .icon:hover { background: #d2eff9; }
+    .lan-warn { margin: 0; color: #8a5a00; font-size: 0.857rem; line-height: 16px; }
+    .lan-warn[hidden] { display: none; }
+    .confirm { border: 1px solid #d0d0d0; border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 6px; background: #fff; }
+    .confirm p { margin: 0; white-space: pre-wrap; word-break: break-word; }
+    .confirm input { border: 1px solid #d0d0d0; border-radius: 6px; padding: 4px 6px; }
+    .confirm-actions { display: flex; gap: 6px; }
     .banner { display: flex; align-items: flex-start; gap: 8px; border-radius: 4px; padding: 6px 8px; font-size: 0.857rem; line-height: 16px; }
     .banner span { flex: 1; white-space: pre-wrap; }
     .banner.success, .banner.warning, .banner.error { background: #f5f5f5; color: #1a1a1a; border: 1px solid #d0d0d0; }

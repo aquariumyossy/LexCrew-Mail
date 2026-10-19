@@ -1,4 +1,5 @@
 import { TOOL_SEARCH, TOOL_SEARCH_INDEX, TOOL_SEARCH_SENT } from "./tools";
+import { unwrapUntrusted, wrapUntrusted } from "./untrusted";
 
 export type ReplayMessage = {
   role: string;
@@ -51,15 +52,18 @@ const COMPACTORS: Record<string, Compactor> = {
 function compactedContent(toolName: string, content: string): string | undefined {
   const compact = COMPACTORS[toolName];
   if (!compact) return undefined;
+  const fenced = unwrapUntrusted(content);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(content);
+    parsed = JSON.parse(fenced ? fenced.body : content);
   } catch {
     return undefined;
   }
   const next = compact(parsed);
   if (next === null) return undefined;
-  return `${OMIT_PREFIX}${JSON.stringify(next)}`;
+  const body = `${OMIT_PREFIX}${JSON.stringify(next)}`;
+  const tag = fenced?.tag === "web-search" || fenced?.tag === "argos-result" ? fenced.tag : null;
+  return tag ? wrapUntrusted(tag, body) : body;
 }
 
 export function compactSearchReplay<T extends ReplayMessage>(messages: T[]): T[] {

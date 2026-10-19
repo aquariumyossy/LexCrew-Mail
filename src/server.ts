@@ -3,6 +3,7 @@ import path from "path";
 import express from "express";
 import { HOST, PORT } from "./shared/constants";
 import { createApp } from "./sidecar/app";
+import { sessionTokenPath, writeSessionToken } from "./sidecar/sessionAuth";
 
 async function main(): Promise<void> {
   const app = createApp();
@@ -40,6 +41,7 @@ async function main(): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(PORT, HOST, () => {
+      writeSessionToken(sessionTokenPath(), String(app.locals.sessionToken || ""));
       console.log(`listening https://${HOST}:${PORT} static ${path.resolve("src/taskpane")}`);
       resolve();
     });

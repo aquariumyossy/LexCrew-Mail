@@ -13,6 +13,7 @@ import { searxngSearch } from "./search";
 import { appointmentsFromIcs, fetchGoogleIcs } from "./ical";
 import { parseLocal } from "../shared/freeSlots";
 import { adoptConnection, connectionFromBody, connectionPath, Connection, ConnectionFile, readConnection, resolveConnection, saveConnection, sweepConnectionTemps } from "./connection";
+import { newSessionToken, SESSION_TOKEN_HEADER, tokenMatches } from "./sessionAuth";
 
 function clientSignal(res: Response, timeoutMs: number): { signal: AbortSignal; timedOut: () => boolean } {
   const timeout = AbortSignal.timeout(timeoutMs);
@@ -35,13 +36,30 @@ function activeConnection(body: unknown): Connection {
   return resolveConnection(readConnection(connectionPath()), record);
 }
 
-function connectionPayload(file: ConnectionFile): { kind: "ready"; llmBaseUrl: string; llmApiKey: string; searxngUrl: string } | { kind: "absent" } | { kind: "broken" } {
+function connectionPayload(file: ConnectionFile): { kind: "ready"; llmBaseUrl: string; searxngUrl: string; hasApiKey: boolean } | { kind: "absent" } | { kind: "broken" } {
   if (file.kind !== "ready") return { kind: file.kind };
-  return { kind: "ready", ...file.connection };
+  return {
+    kind: "ready",
+    llmBaseUrl: file.connection.llmBaseUrl,
+    searxngUrl: file.connection.searxngUrl,
+    hasApiKey: Boolean(file.connection.llmApiKey.trim()),
+  };
 }
 
-export function createApp(): Express {
+export function createApp(options?: { token?: string }): Express {
+  const token = options?.token || newSessionToken();
   const app = express();
+  app.locals.sessionToken = token;
+  app.use((req, res, next) => {
+    const header = req.get(SESSION_TOKEN_HEADER) || "";
+    const authorization = req.get("authorization") || "";
+    const bearer = authorization.toLowerCase().startsWith("bearer ") ? authorization.slice("bearer ".length).trim() : "";
+    if (tokenMatches(header || bearer, token)) {
+      next();
+      return;
+    }
+    res.status(401).json({ error: "認証が必要です。" });
+  });
   const history = openHistory();
   sweepConnectionTemps(path.dirname(connectionPath()));
   /*
@@ -104,8 +122,12 @@ export function createApp(): Express {
   app.put("/api/connection", (req, res) => {
     try {
       const next = connectionFromBody(req.body);
+      if (!next.llmApiKey.trim()) {
+        const current = readConnection(connectionPath());
+        if (current.kind === "ready") next.llmApiKey = current.connection.llmApiKey;
+      }
       saveConnection(connectionPath(), next);
-      res.json({ kind: "ready", ...next });
+      res.json(connectionPayload({ kind: "ready", connection: next }));
     } catch (error) {
       res.status(500).json({ error: textError(error) });
     }
