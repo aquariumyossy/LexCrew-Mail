@@ -37,7 +37,7 @@ namespace KuruOutlook
                 {
                     conversationId = MailTarget.ConversationId(
                         SafeString(() => item.ConversationID),
-                        SafeString(delegate { return SelectedConversationId(); }));
+                        SafeString(() => Convert.ToString(item.EntryID)));
                 }
                 return "{\"mode\":\"" + Json(mode) + "\",\"conversationId\":\"" + Json(conversationId) + "\"}";
             }
@@ -145,9 +145,12 @@ namespace KuruOutlook
                 }
                 var messages = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
                 CollectConversation(item, messages);
+                string source = QuotedHeaders.Clip(
+                    SafeString(() => Convert.ToString(item.HTMLBody)) + "\n" + SafeString(() => Convert.ToString(item.Body)));
                 return new JavaScriptSerializer().Serialize(new System.Collections.Generic.Dictionary<string, object>
                 {
-                    { "messages", messages }
+                    { "messages", messages },
+                    { "source", source }
                 });
             }
             catch
@@ -786,16 +789,6 @@ namespace KuruOutlook
                 && to > from;
         }
 
-        string SelectedConversationId()
-        {
-            dynamic selected = MailTarget.Selected(_window);
-            if (selected == null)
-            {
-                return "";
-            }
-            return Convert.ToString(selected.ConversationID) ?? "";
-        }
-
         static bool SafeSent(dynamic item)
         {
             try
@@ -844,7 +837,27 @@ namespace KuruOutlook
             {
                 return smtp;
             }
-            return AcceptSmtp(SafeString(() => Convert.ToString(item.SenderEmailAddress)));
+            smtp = AcceptSmtp(SafeString(() => Convert.ToString(item.SenderEmailAddress)));
+            if (smtp.Length > 0)
+            {
+                return smtp;
+            }
+            smtp = NameSmtp(SafeString(() => Convert.ToString(item.SenderName)));
+            if (smtp.Length > 0)
+            {
+                return smtp;
+            }
+            smtp = NameSmtp(MapiString(item, "http://schemas.microsoft.com/mapi/proptag/0x0C1A001F"));
+            if (smtp.Length > 0)
+            {
+                return smtp;
+            }
+            return NameSmtp(SafeString(() => item.Sender.Name));
+        }
+
+        static string NameSmtp(string value)
+        {
+            return AcceptSmtp(MailParty.Smtp(value));
         }
 
         static string RecipientSmtp(dynamic recipient)
@@ -857,6 +870,11 @@ namespace KuruOutlook
             catch
             {
             }
+            if (smtp.Length > 0)
+            {
+                return smtp;
+            }
+            smtp = NameSmtp(SafeString(() => Convert.ToString(recipient.Name)));
             if (smtp.Length > 0)
             {
                 return smtp;
@@ -1175,28 +1193,141 @@ namespace KuruOutlook
             }
             try
             {
+                AppendQuotedHeaders(item, messages);
+            }
+            catch
+            {
+            }
+            int beforeSiblings = messages.Count;
+            try
+            {
                 dynamic conversation = item.GetConversation();
-                if (conversation == null)
+                if (conversation != null)
                 {
-                    return;
+                    try
+                    {
+                        WalkConversation(conversation, conversation.GetRootItems(), messages, seen, 0);
+                    }
+                    catch
+                    {
+                    }
+                    try
+                    {
+                        CollectConversationTable(item, conversation, messages, seen);
+                    }
+                    catch
+                    {
+                    }
                 }
+            }
+            catch
+            {
+            }
+            if (messages.Count == beforeSiblings)
+            {
                 try
                 {
-                    WalkConversation(conversation, conversation.GetRootItems(), messages, seen, 0);
-                }
-                catch
-                {
-                }
-                try
-                {
-                    CollectConversationTable(item, conversation, messages, seen);
+                    CollectSelectionSibling(item, messages, seen);
                 }
                 catch
                 {
                 }
             }
+        }
+
+        static void AppendQuotedHeaders(dynamic item, System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages)
+        {
+            var list = new System.Collections.Generic.List<string>();
+            string html = QuotedHeaders.Clip(SafeString(() => Convert.ToString(item.HTMLBody)));
+            string plain = QuotedHeaders.Clip(SafeString(() => Convert.ToString(item.Body)));
+            string[] fromHtml = QuotedHeaders.Addresses(html);
+            string[] fromPlain = QuotedHeaders.Addresses(plain);
+            for (int i = 0; i < fromHtml.Length; i++) AddParticipant(list, fromHtml[i]);
+            for (int i = 0; i < fromPlain.Length; i++) AddParticipant(list, fromPlain[i]);
+            if (list.Count == 0)
+            {
+                return;
+            }
+            messages.Add(new System.Collections.Generic.Dictionary<string, object>
+            {
+                { "from", "" },
+                { "sender", "" },
+                { "to", list.ToArray() },
+                { "cc", new string[0] },
+                { "replyTo", new string[0] }
+            });
+        }
+
+        static void CollectSelectionSibling(
+            dynamic item,
+            System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages,
+            System.Collections.Generic.HashSet<string> seen)
+        {
+            string openId = SafeString(() => Convert.ToString(item.ConversationID));
+            if (openId.Length == 0)
+            {
+                return;
+            }
+            dynamic explorer = null;
+            try
+            {
+                explorer = item.Application.ActiveExplorer();
+            }
             catch
             {
+                return;
+            }
+            if (explorer == null)
+            {
+                return;
+            }
+            dynamic selection = null;
+            try
+            {
+                selection = explorer.Selection;
+            }
+            catch
+            {
+                return;
+            }
+            if (selection == null)
+            {
+                return;
+            }
+            int count = 0;
+            try
+            {
+                count = Convert.ToInt32(selection.Count);
+            }
+            catch
+            {
+                return;
+            }
+            int take = count < 20 ? count : 20;
+            for (int i = 1; i <= take && messages.Count < ConversationLimit; i++)
+            {
+                try
+                {
+                    dynamic selected = selection[i];
+                    if (selected == null)
+                    {
+                        continue;
+                    }
+                    string cid = SafeString(() => Convert.ToString(selected.ConversationID));
+                    if (!string.Equals(cid, openId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    string entryId = SafeString(() => Convert.ToString(selected.EntryID));
+                    if (entryId.Length > 0 && !seen.Add(entryId))
+                    {
+                        continue;
+                    }
+                    messages.Add(MessageParties(selected));
+                }
+                catch
+                {
+                }
             }
         }
 
@@ -1225,7 +1356,14 @@ namespace KuruOutlook
                 dynamic mail = null;
                 try
                 {
-                    mail = roots[i];
+                    try
+                    {
+                        mail = roots[i];
+                    }
+                    catch
+                    {
+                        mail = roots.Item(i);
+                    }
                     if (mail == null)
                     {
                         continue;
@@ -1270,6 +1408,13 @@ namespace KuruOutlook
             catch
             {
             }
+            try
+            {
+                table.Columns.Add("StoreID");
+            }
+            catch
+            {
+            }
             int guard = 0;
             while (messages.Count < ConversationLimit && guard < ConversationLimit)
             {
@@ -1299,7 +1444,29 @@ namespace KuruOutlook
                     {
                         continue;
                     }
-                    dynamic mail = item.Session.GetItemFromID(entryId);
+                    string storeId = "";
+                    try
+                    {
+                        storeId = Convert.ToString(row["StoreID"]) ?? "";
+                    }
+                    catch
+                    {
+                    }
+                    dynamic mail = null;
+                    if (storeId.Length > 0)
+                    {
+                        try
+                        {
+                            mail = item.Session.GetItemFromID(entryId, storeId);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                    if (mail == null)
+                    {
+                        mail = item.Session.GetItemFromID(entryId);
+                    }
                     if (mail == null)
                     {
                         continue;
@@ -1348,7 +1515,17 @@ namespace KuruOutlook
             {
                 return prop;
             }
-            return "";
+            string named = NameSmtp(SafeString(() => Convert.ToString(item.SentOnBehalfOfName)));
+            if (named.Length > 0)
+            {
+                return named;
+            }
+            named = NameSmtp(MapiString(item, "http://schemas.microsoft.com/mapi/proptag/0x0065001F"));
+            if (named.Length > 0)
+            {
+                return named;
+            }
+            return NameSmtp(MapiString(item, "http://schemas.microsoft.com/mapi/proptag/0x0042001F"));
         }
 
         static string[] ReplyToAddresses(dynamic item)

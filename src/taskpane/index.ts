@@ -45,6 +45,7 @@ import { HeldMailFile, MAIL_ATTACH_HINT, MailAttachPlan, mailChipNote, planMailA
 import { collectFreeSlots } from "./slots";
 import { renderMarkdown } from "./markdown";
 import { runTurn } from "./runTurn";
+import { beginNewConversation, deleteShownConversation, detachPreviousMail, restoreDecision, sendTarget } from "./conversationState";
 import { Parked, decideThread, park, splitHistory, unpark } from "./threadView";
 import { aboutCopy } from "./about";
 
@@ -308,6 +309,7 @@ export function mount(root: HTMLElement): void {
 
   function currentThread(): ThreadSnapshot {
     const header = readMailHeader();
+    const conversation = readConversation();
     return {
       subject: header?.subject ?? "",
       from: header?.from ?? "",
@@ -315,7 +317,8 @@ export function mount(root: HTMLElement): void {
       cc: header?.cc ?? [],
       bcc: header?.bcc ?? [],
       parties: readParties(),
-      messages: readConversation(),
+      messages: conversation.messages,
+      source: conversation.source,
     };
   }
 
@@ -525,11 +528,12 @@ export function mount(root: HTMLElement): void {
     turnAbort = new AbortController();
     paint();
     try {
-      const wasFresh = freshConversation;
+      const target = sendTarget({ conversationId, fresh: freshConversation });
+      const wasFresh = target.kind === "create";
       const conversation =
-        conversationId && !freshConversation
-          ? { id: conversationId }
-          : await ensureConversation(conversationKey(), freshConversation);
+        target.kind === "existing"
+          ? { id: target.id }
+          : await ensureConversation(conversationKey(), target.kind === "create");
       freshConversation = false;
       conversationId = conversation.id;
       if (!wasFresh && filesFor !== conversation.id) {
@@ -1312,10 +1316,12 @@ export function mount(root: HTMLElement): void {
     newer.className = "primary history-new";
     newer.addEventListener("click", () => {
       dropFiles();
-      conversationId = "";
-      freshConversation = true;
+      const next = beginNewConversation();
+      conversationId = next.conversationId;
+      freshConversation = next.fresh;
       filesFor = "";
       thread.splice(0, thread.length);
+      rememberMail();
       dialog.close();
       paint();
     });
@@ -1365,10 +1371,13 @@ export function mount(root: HTMLElement): void {
       remove.addEventListener("click", () => {
         void deleteConversation(row.id).then(() => {
           if (conversationId === row.id) {
+            const next = deleteShownConversation({ conversationId, fresh: freshConversation }, row.id);
             dropFiles();
-            conversationId = "";
+            conversationId = next.conversationId;
+            freshConversation = next.fresh;
             filesFor = "";
             thread.splice(0, thread.length);
+            rememberMail();
             paint();
           }
           void openHistory();
@@ -1453,6 +1462,27 @@ export function mount(root: HTMLElement): void {
       if (tookSaved) park(threadDrafts, key, draft);
       if (kept.length) unsavedKept.set(key, kept);
     };
+    const keepFresh = freshConversation;
+    const previousTranscript = {
+      conversationId,
+      fresh: freshConversation,
+      lines: thread.map((row) => ({ ...row })),
+      committed: committed.slice(),
+      filesFor,
+    };
+    const restorePrevious = () => {
+      conversationId = previousTranscript.conversationId;
+      freshConversation = previousTranscript.fresh;
+      thread.splice(0, thread.length, ...previousTranscript.lines);
+      committed = previousTranscript.committed;
+      filesFor = previousTranscript.filesFor;
+    };
+    const detached = detachPreviousMail({ conversationId, fresh: freshConversation });
+    conversationId = detached.conversationId;
+    freshConversation = keepFresh || detached.fresh;
+    thread.splice(0, thread.length);
+    filesFor = "";
+    committed = [];
     try {
       const rows = await listConversations(key);
       let current = "";
@@ -1462,17 +1492,22 @@ export function mount(root: HTMLElement): void {
         current = "";
       }
       if (current !== key) {
+        if (!freshConversation) restorePrevious();
         putBack();
         return;
       }
-      if (rows[0]) {
-        await restoreConversation(rows[0].id);
+      const decision = restoreDecision({ conversationId, fresh: freshConversation }, rows[0] ? { id: rows[0].id } : null);
+      freshConversation = decision.state.fresh;
+      conversationId = decision.state.conversationId;
+      if (decision.restoreId) {
+        await restoreConversation(decision.restoreId);
         if (kept.length) committed = mergeFiles(committed, kept);
-      } else {
+      } else if (!decision.state.fresh) {
         clearThread();
         committed = kept;
+      } else {
+        committed = kept;
       }
-      freshConversation = false;
       shownKey = key;
       rememberMail();
       composer.input.value = draft.text;
@@ -1485,6 +1520,7 @@ export function mount(root: HTMLElement): void {
       paint();
       refreshMailAttachments();
     } catch (error) {
+      if (!freshConversation) restorePrevious();
       putBack();
       const text = error instanceof Error ? error.message : "このメールの会話を読めません。";
       if (banner?.text !== text) {

@@ -206,6 +206,10 @@ export function deletePerson(db: HistoryDb, address: string): void {
 }
 
 export function deleteConversation(db: HistoryDb, id: string): void {
-  db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(id);
-  db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
+  const removeMessages = db.prepare("DELETE FROM messages WHERE conversation_id = ?");
+  const removeConversation = db.prepare("DELETE FROM conversations WHERE id = ?");
+  db.transaction(() => {
+    removeMessages.run(id);
+    removeConversation.run(id);
+  })();
 }

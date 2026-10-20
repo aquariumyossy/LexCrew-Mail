@@ -3,7 +3,7 @@ import os from "os";
 import path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CommittedFile } from "../shared/attachedFiles";
-import { deletePerson, getConversation, openHistory, readMemory, replaceNotes, setConversationFiles, startConversation, upsertPerson } from "./history";
+import { appendMessage, deleteConversation, deletePerson, getConversation, openHistory, readMemory, replaceNotes, setConversationFiles, startConversation, upsertPerson } from "./history";
 
 const dirs: string[] = [];
 
@@ -36,6 +36,25 @@ describe("conversation files", () => {
     const loaded = getConversation(history, created.id);
     expect(loaded?.files).toEqual([file]);
     expect(JSON.stringify(loaded?.files)).not.toContain("base64");
+    history.close();
+  });
+});
+
+describe("deleteConversation", () => {
+  it("removes the conversation and its messages so a new one cannot reload them", () => {
+    const history = db();
+    const old = startConversation(history, "mail-a", "佐藤の件", true);
+    appendMessage(history, old.id, { role: "user", content: "佐藤良一さんへの返信を書いて" });
+    appendMessage(history, old.id, { role: "assistant", content: "佐藤さんへの返信です。" });
+    deleteConversation(history, old.id);
+    expect(getConversation(history, old.id)).toBeNull();
+    expect(history.prepare("SELECT content FROM messages").all()).toEqual([]);
+    expect(history.prepare("SELECT id FROM conversations WHERE id = ?").get(old.id)).toBeUndefined();
+    const created = startConversation(history, "mail-b", "", true);
+    expect(getConversation(history, created.id)?.messages).toEqual([]);
+    const again = startConversation(history, "mail-a", "", true);
+    expect(again.id).not.toBe(old.id);
+    expect(getConversation(history, again.id)?.messages).toEqual([]);
     history.close();
   });
 });

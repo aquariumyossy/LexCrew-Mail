@@ -5,13 +5,17 @@ namespace KuruOutlook
 {
     public static class MailTarget
     {
-        public static string ConversationId(string itemId, string selectedId)
+        public static string ConversationId(string itemConversationId, string itemEntryId)
         {
-            if (!string.IsNullOrEmpty(itemId))
+            if (!string.IsNullOrEmpty(itemConversationId))
             {
-                return itemId;
+                return itemConversationId;
             }
-            return selectedId ?? "";
+            if (string.IsNullOrEmpty(itemEntryId))
+            {
+                return "";
+            }
+            return "item:" + itemEntryId;
         }
 
         public static dynamic Draft(object window, out bool inspector)

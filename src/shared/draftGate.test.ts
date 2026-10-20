@@ -79,6 +79,104 @@ describe("reviewDraftChange", () => {
     }
   });
 
+  const quotedReply = [
+    "<div>",
+    "<p><b>From:</b> 4cs 佐藤良一 &lt;r.sato@4cs.co.jp&gt;<br>",
+    "<b>Sent:</b> 2026年10月19日 9:00<br>",
+    "<b>To:</b> ml.kanto-soshotanto@4cs.co.jp<br>",
+    "<b>Cc:</b> okamoto.takafumi@4cs.co.jp<br>",
+    "<b>Subject:</b> 週次</p>",
+    "<p>本文です。yoshida@yoshidalaw.jp とは無関係です。</p>",
+    "</div>",
+  ].join("");
+
+  it("treats a quoted From address as in-thread when the conversation walk is empty", () => {
+    const review = reviewDraftChange(
+      draft({ bodyHtml: "<p>返信</p>", to: ["r.sato@4cs.co.jp"] }),
+      {
+        ...thread,
+        from: "自分 <me@example.com>",
+        to: ["ml.kanto-soshotanto@4cs.co.jp"],
+        cc: [],
+        parties: [{ name: "自分", address: "me@example.com" }],
+        messages: [],
+        source: quotedReply,
+      }
+    );
+    expect(review.ok).toBe(true);
+    if (!review.ok) return;
+    expect(review.changes.find((row) => row.field === "to")?.outside).toEqual([]);
+    expect(renderDraftConfirm(review.changes).warning).toBeNull();
+  });
+
+  it("reads a plain 差出人 and Reply-To, and does not treat a quoted Bcc as in-thread", () => {
+    const source = [
+      "差出人: 4cs 佐藤良一 <R.Sato@4cs.co.jp>",
+      "宛先: ml.kanto-soshotanto@4cs.co.jp",
+      "返信先: reply@4cs.co.jp",
+      "Bcc: secret@4cs.co.jp",
+      "本文です。yoshida@yoshidalaw.jp とは無関係です。",
+    ].join("\n");
+    const base = {
+      ...thread,
+      from: "自分 <me@example.com>",
+      to: ["ml.kanto-soshotanto@4cs.co.jp"],
+      cc: [],
+      parties: [{ name: "自分", address: "me@example.com" }],
+      messages: [],
+      source,
+    };
+    const sender = reviewDraftChange(draft({ bodyHtml: "<p>返信</p>", to: ["r.sato@4cs.co.jp"] }), base);
+    expect(sender.ok).toBe(true);
+    if (!sender.ok) return;
+    expect(sender.changes.find((row) => row.field === "to")?.outside).toEqual([]);
+    const replyTo = reviewDraftChange(draft({ bodyHtml: "<p>返信</p>", cc: ["reply@4cs.co.jp"] }), base);
+    expect(replyTo.ok).toBe(true);
+    if (!replyTo.ok) return;
+    expect(replyTo.changes.find((row) => row.field === "cc")?.outside).toEqual([]);
+    const hidden = reviewDraftChange(draft({ bodyHtml: "<p>返信</p>", bcc: ["secret@4cs.co.jp"] }), base);
+    expect(hidden.ok).toBe(true);
+    if (!hidden.ok) return;
+    expect(renderDraftConfirm(hidden.changes).outside).toEqual(["secret@4cs.co.jp"]);
+  });
+
+  it("still warns for an address that is only prose in the quoted body", () => {
+    const review = reviewDraftChange(
+      draft({ bodyHtml: "<p>返信</p>", to: ["yoshida@yoshidalaw.jp"] }),
+      {
+        ...thread,
+        from: "自分 <me@example.com>",
+        to: ["ml.kanto-soshotanto@4cs.co.jp"],
+        cc: [],
+        parties: [{ name: "自分", address: "me@example.com" }],
+        messages: [],
+        source: quotedReply,
+      }
+    );
+    expect(review.ok).toBe(true);
+    if (!review.ok) return;
+    expect(renderDraftConfirm(review.changes).outside).toEqual(["yoshida@yoshidalaw.jp"]);
+    expect(renderDraftConfirm(review.changes).warning).toBe(OUTSIDE_THREAD_WARNING);
+  });
+
+  it("treats a From-only sibling from the conversation as in-thread", () => {
+    const review = reviewDraftChange(
+      draft({ bodyHtml: "<p>返信</p>", to: ["r.sato@4cs.co.jp"] }),
+      {
+        ...thread,
+        from: "自分 <me@example.com>",
+        to: ["ml.kanto-soshotanto@4cs.co.jp"],
+        cc: [],
+        parties: [{ name: "自分", address: "me@example.com" }],
+        messages: [{ from: "4cs 佐藤良一 <R.Sato@4cs.co.jp>", to: ["ml.kanto-soshotanto@4cs.co.jp"], cc: ["okamoto.takafumi@4cs.co.jp"] }],
+      }
+    );
+    expect(review.ok).toBe(true);
+    if (!review.ok) return;
+    expect(review.changes.find((row) => row.field === "to")?.outside).toEqual([]);
+    expect(renderDraftConfirm(review.changes).warning).toBeNull();
+  });
+
   it("treats a From-only address elsewhere in the conversation as in-thread", () => {
     const review = reviewDraftChange(
       draft({ bodyHtml: "<p>本文</p>", to: ["hanako@example.com", "alice@example.com"] }),

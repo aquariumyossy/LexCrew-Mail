@@ -90,12 +90,14 @@ export function readMailHeader(): MailHeader | null {
   }
 }
 
-export function readConversation(): ThreadMessage[] {
-  if (!outlookReady()) return [];
+export function readConversation(): { messages: ThreadMessage[]; source: string } {
+  if (!outlookReady()) return { messages: [], source: "" };
   try {
-    return parseConversation(JSON.parse(bridge().readConversation()));
+    const parsed = JSON.parse(bridge().readConversation()) as { source?: unknown };
+    const source = typeof parsed.source === "string" ? parsed.source.slice(0, 400_000) : "";
+    return { messages: parseConversation(parsed), source };
   } catch {
-    return [];
+    return { messages: [], source: "" };
   }
 }
 

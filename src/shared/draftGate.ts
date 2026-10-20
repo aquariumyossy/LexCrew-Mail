@@ -20,6 +20,8 @@ export type ThreadSnapshot = {
   bcc?: string[];
   parties: ThreadParty[];
   messages?: ThreadMessage[];
+  /** Raw HTML or plain text of the open item, including quoted headers. */
+  source?: string;
 };
 
 export type DraftChange = {
@@ -191,7 +193,132 @@ function threadMailboxes(thread: ThreadSnapshot, known: NamedAddress[]): Set<str
     const smtp = smtpOf(label);
     if (smtp && isMailbox(smtp)) allow.add(smtp);
   }
+  for (const smtp of quotedHeaderAddresses(thread.source || "")) allow.add(smtp);
   return allow;
+}
+
+const QUOTE_CAP = 400_000;
+const MAILBOX_FIND = /[a-z0-9](?:[a-z0-9._%+-]{0,62}[a-z0-9])?@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+/gi;
+
+type HeaderRole = "from" | "sender" | "to" | "cc" | "replyTo" | "skip";
+
+const HEADER_LABELS: Array<{ name: string; role: HeaderRole }> = [
+  { name: "reply-to", role: "replyTo" },
+  { name: "返信先", role: "replyTo" },
+  { name: "送信日時", role: "skip" },
+  { name: "差出人", role: "from" },
+  { name: "送信者", role: "sender" },
+  { name: "subject", role: "skip" },
+  { name: "sender", role: "sender" },
+  { name: "from", role: "from" },
+  { name: "date", role: "skip" },
+  { name: "sent", role: "skip" },
+  { name: "bcc", role: "skip" },
+  { name: "件名", role: "skip" },
+  { name: "日付", role: "skip" },
+  { name: "宛先", role: "to" },
+  { name: "cc", role: "cc" },
+  { name: "to", role: "to" },
+];
+
+/** Addresses in quoted From/Sender/To/Cc/Reply-To lines. Prose and Bcc stay out. */
+export function quotedHeaderAddresses(source: string): string[] {
+  const text = quoteHeaderText(source);
+  const hits: Array<{ role: HeaderRole; end: number; index: number }> = [];
+  let index = 0;
+  while (index < text.length) {
+    const found = matchHeader(text, index);
+    if (!found) {
+      index += 1;
+      continue;
+    }
+    hits.push({ role: found.role, end: found.end, index });
+    index = found.end;
+  }
+  const found: string[] = [];
+  for (let i = 0; i < hits.length; i++) {
+    if (hits[i].role === "skip") continue;
+    let stop = i + 1 < hits.length ? hits[i + 1].index : text.length;
+    const newline = text.indexOf("\n", hits[i].end);
+    if (newline >= 0 && newline < stop) stop = newline;
+    const period = text.indexOf("。", hits[i].end);
+    if (period >= 0 && period < stop) stop = period;
+    const value = text.slice(hits[i].end, stop);
+    MAILBOX_FIND.lastIndex = 0;
+    for (const match of value.match(MAILBOX_FIND) || []) {
+      const smtp = match.toLowerCase();
+      if (isMailbox(smtp) && !found.includes(smtp)) found.push(smtp);
+    }
+  }
+  return found;
+}
+
+function quoteHeaderText(source: string): string {
+  let text = (source || "").replace(/\0/g, "").replace(/\r\n|\r/g, "\n");
+  text = text.replace(/[A-Za-z0-9+/]{200,}={0,2}/g, " ");
+  if (text.length > QUOTE_CAP) text = text.slice(0, QUOTE_CAP);
+  text = text.replace(/<br\b[^>]*>/gi, "\n");
+  text = text.replace(/<\/(?:p|div|tr|li|h[1-6]|table|blockquote|td|th)\s*>/gi, "\n");
+  text = decodeQuoteEntities(text);
+  text = text.replace(/<\s*([^<>\s]+@[^<>\s]+)\s*>/g, " $1 ");
+  text = text.replace(/＜\s*([^＜＞\s]+@[^＜＞\s]+)\s*＞/g, " $1 ");
+  text = text.replace(/<[^>]*>/g, " ");
+  return foldQuoteWidth(text);
+}
+
+function matchHeader(text: string, index: number): { role: HeaderRole; end: number } | null {
+  if (!headerBoundary(text, index)) return null;
+  const lower = text.toLowerCase();
+  let best: { role: HeaderRole; end: number; length: number } | null = null;
+  for (const label of HEADER_LABELS) {
+    if (index + label.name.length > text.length) continue;
+    const slice = /^[a-z]/.test(label.name) ? lower.slice(index, index + label.name.length) : text.slice(index, index + label.name.length);
+    if (slice !== label.name) continue;
+    let cursor = index + label.name.length;
+    while (cursor < text.length && (text[cursor] === " " || text[cursor] === "\t")) cursor += 1;
+    if (text[cursor] !== ":") continue;
+    if (!best || label.name.length > best.length) best = { role: label.role, end: cursor + 1, length: label.name.length };
+  }
+  return best ? { role: best.role, end: best.end } : null;
+}
+
+function headerBoundary(text: string, index: number): boolean {
+  if (index === 0) return true;
+  return !/[A-Za-z0-9_-]/.test(text[index - 1]);
+}
+
+function foldQuoteWidth(text: string): string {
+  let out = "";
+  for (const ch of text) {
+    const code = ch.charCodeAt(0);
+    if (code === 0xff1a) out += ":";
+    else if (code >= 0xff21 && code <= 0xff3a) out += String.fromCharCode(code - 0xff21 + 65);
+    else if (code >= 0xff41 && code <= 0xff5a) out += String.fromCharCode(code - 0xff41 + 97);
+    else out += ch;
+  }
+  return out;
+}
+
+function decodeQuoteEntities(text: string): string {
+  return text
+    .replace(/&#x([0-9a-f]+);?/gi, (_all, hex: string) => quoteCode(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);?/g, (_all, dec: string) => quoteCode(Number.parseInt(dec, 10)))
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&apos;|&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&");
+}
+
+function quoteCode(code: number): string {
+  if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return "";
+  if (code <= 0x1f && code !== 0x09 && code !== 0x0a && code !== 0x0d) return "";
+  try {
+    return String.fromCodePoint(code);
+  } catch {
+    return "";
+  }
 }
 
 export function parseConversation(value: unknown): ThreadMessage[] {
