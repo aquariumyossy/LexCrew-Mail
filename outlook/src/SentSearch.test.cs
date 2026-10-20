@@ -47,6 +47,14 @@ class SentSearchTest
             throw new Exception("excerpt leaked quote or signature: " + excerpt);
         }
         ExpectContains(prior, "引用された依頼");
+        string hiddenQuote = "<html><head><style>span.MsoHidden{mso-hide:all}</style></head><body><p>新しい前文です</p><div style='border:none;border-top:solid #E1E1E1 1.0pt'><p>引用<span class=MsoHidden>引用の隠し</span>見える</p></div></body></html>";
+        SentSearch.SplitBodies(hiddenQuote, "引用の隠し", SentSearch.SentExcerptChars, SentSearch.PriorChars, out excerpt, out prior);
+        ExpectContains(prior, "引用");
+        ExpectContains(prior, "見える");
+        if (prior.IndexOf("引用の隠し") >= 0)
+        {
+            throw new Exception("prior kept class-hidden text: " + prior);
+        }
         if (prior.IndexOf("新しい前文です") >= 0)
         {
             throw new Exception("prior kept the preface: " + prior);

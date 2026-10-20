@@ -65,8 +65,11 @@ function finalize(fragment: string): string {
   return `<p>${withBreaks}</p>`;
 }
 
+type CssRule = { tag: string; className: string; id: string; decls: string };
+
 function walk(input: string, mode: "html" | "text"): string {
   const src = input.replace(/\u0000/g, "");
+  const rules = collectRules(src);
   const out: string[] = [];
   const frames: Frame[] = [{ name: "#root", color: BLACK, background: WHITE, zeroFont: false }];
   let i = 0;
@@ -119,7 +122,7 @@ function walk(input: string, mode: "html" | "text"): string {
       if (!tag.selfClose && !VOID.has(name)) drop = 1;
       continue;
     }
-    const frame = derive(frames[frames.length - 1], name, tag.attrs);
+    const frame = derive(frames[frames.length - 1], name, tag.attrs, rules);
     if (frame.drop) {
       if (!tag.selfClose && !VOID.has(name)) drop = 1;
       continue;
@@ -157,8 +160,8 @@ function closeFrames(frames: Frame[], out: string[], mode: "html" | "text", name
   frames.length = idx;
 }
 
-function derive(parent: Frame, name: string, attrs: string): Frame & { drop: boolean } {
-  const style = stripCssComments(decode(attr(attrs, "style") || ""));
+function derive(parent: Frame, name: string, attrs: string, rules: CssRule[]): Frame & { drop: boolean } {
+  const style = mergedStyle(name, attrs, rules);
   const color = parseColor(lastDecl(style, "color") || attr(attrs, "color") || "") || parent.color;
   const background =
     parseColor(colorFromBackground(lastDecl(style, "background-color") || "") || colorFromBackground(lastDecl(style, "background") || "") || attr(attrs, "bgcolor") || "") ||
@@ -176,8 +179,104 @@ function derive(parent: Frame, name: string, attrs: string): Frame & { drop: boo
     /(?:^|\s)hidden(?:\s|=|$)/i.test(` ${attrs} `) ||
     /display\s*:\s*none/i.test(style) ||
     /visibility\s*:\s*hidden/i.test(style) ||
-    opacityHides(style);
+    opacityHides(style) ||
+    msoHides(style);
   return { name, color, background, zeroFont, drop };
+}
+
+function collectRules(html: string): CssRule[] {
+  const rules: CssRule[] = [];
+  for (const match of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)) {
+    const css = match[1].replace(/<!--/g, "").replace(/-->/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    parseBlocks(css, rules);
+  }
+  return rules;
+}
+
+function parseBlocks(css: string, rules: CssRule[]): void {
+  let i = 0;
+  while (i < css.length) {
+    const open = css.indexOf("{", i);
+    if (open < 0) break;
+    let depth = 0;
+    let j = open;
+    for (; j < css.length; j += 1) {
+      if (css[j] === "{") depth += 1;
+      else if (css[j] === "}") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    if (depth !== 0) break;
+    const selector = css.slice(i, open).trim();
+    const body = css.slice(open + 1, j);
+    i = j + 1;
+    if (!selector) continue;
+    if (selector.includes("@") || body.includes("{")) {
+      parseBlocks(body, rules);
+      continue;
+    }
+    for (const part of selector.split(",")) {
+      const simple = parseSimpleSelector(part.trim());
+      if (simple) rules.push({ ...simple, decls: body });
+    }
+  }
+}
+
+function parseSimpleSelector(sel: string): { tag: string; className: string; id: string } | null {
+  const cleaned = sel.replace(/:+[A-Za-z_-]+(?:\([^)]*\))?/g, "").trim();
+  if (!cleaned || /[\s>+~[\]*]/.test(cleaned)) return null;
+  const match = /^([A-Za-z][A-Za-z0-9]*)?(?:\.(-?[A-Za-z0-9_-]+)|#([A-Za-z0-9_-]+))?$/.exec(cleaned);
+  if (!match || (!match[1] && !match[2] && !match[3])) return null;
+  return {
+    tag: (match[1] || "").toLowerCase(),
+    className: (match[2] || "").toLowerCase(),
+    id: (match[3] || "").toLowerCase(),
+  };
+}
+
+function mergedStyle(name: string, attrs: string, rules: CssRule[]): string {
+  const classes = (attr(attrs, "class") || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const id = (attr(attrs, "id") || "").toLowerCase();
+  const chunks: Array<{ text: string; score: number }> = [];
+  for (const rule of rules) {
+    if (rule.tag && rule.tag !== name) continue;
+    if (rule.className && !classes.includes(rule.className)) continue;
+    if (rule.id && rule.id !== id) continue;
+    let score = 0;
+    if (rule.tag) score += 1;
+    if (rule.className) score += 10;
+    if (rule.id) score += 100;
+    chunks.push({ text: rule.decls, score });
+  }
+  const inline = attr(attrs, "style");
+  if (inline) chunks.push({ text: inline, score: 1000 });
+  return mergeDecls(chunks);
+}
+
+function mergeDecls(chunks: Array<{ text: string; score: number }>): string {
+  const map = new Map<string, { value: string; score: number }>();
+  for (const chunk of chunks) {
+    const cleaned = stripCssComments(decode(chunk.text));
+    for (const part of cleaned.split(";")) {
+      const idx = part.indexOf(":");
+      if (idx < 0) continue;
+      const prop = part.slice(0, idx).trim().toLowerCase();
+      if (!prop) continue;
+      let value = part.slice(idx + 1).trim();
+      const important = /!important/i.test(value);
+      value = value.replace(/!important/gi, "").trim();
+      const score = chunk.score + (important ? 10000 : 0);
+      const prev = map.get(prop);
+      if (!prev || score >= prev.score) map.set(prop, { value, score });
+    }
+  }
+  return [...map.entries()].map(([key, decl]) => `${key}:${decl.value}`).join(";");
+}
+
+function msoHides(style: string): boolean {
+  const value = lastDecl(style, "mso-hide");
+  return !!value && /^all\b/i.test(value.trim());
 }
 
 function readTag(src: string, start: number): Tag | null {
@@ -249,8 +348,8 @@ function fontSizeIsZero(value: string): boolean | null {
   if (!Number.isFinite(n)) return null;
   const unit = (match[2] || "px").toLowerCase();
   if (n <= 0) return true;
-  if (unit === "px" && n < 1) return true;
-  if (unit === "pt" && n < 0.75) return true;
+  if (unit === "px" && n <= 2) return true;
+  if (unit === "pt" && n <= 1) return true;
   if ((unit === "em" || unit === "rem") && n < 0.08) return true;
   if (unit === "%" && n < 8) return true;
   return false;

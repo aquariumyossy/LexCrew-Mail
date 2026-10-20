@@ -10,6 +10,23 @@ namespace KuruOutlook
             return MailHtml.ToPlain(html);
         }
 
+        /** Quote excerpts do not include the head, where Word puts class rules such as mso-hide. */
+        public static string WithHeadStyles(string html, string fragment)
+        {
+            if (string.IsNullOrEmpty(fragment)) return fragment ?? "";
+            if (string.IsNullOrEmpty(html)) return fragment;
+            System.Text.RegularExpressions.MatchCollection styles = Regex.Matches(html, @"<style\b[^>]*>[\s\S]*?</style>", RegexOptions.IgnoreCase);
+            if (styles.Count == 0) return fragment;
+            var prefix = new System.Text.StringBuilder();
+            for (int i = 0; i < styles.Count; i++)
+            {
+                if (fragment.IndexOf(styles[i].Value, System.StringComparison.Ordinal) >= 0) continue;
+                prefix.Append(styles[i].Value);
+            }
+            if (prefix.Length == 0) return fragment;
+            return prefix.ToString() + fragment;
+        }
+
         public static string SplicePreface(string html, string preface, MailFont font)
         {
             if (html == null)

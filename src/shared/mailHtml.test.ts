@@ -86,4 +86,62 @@ describe("visibleMailText", () => {
   it("strips zero-width and bidi controls", () => {
     expect(visibleMailText("本\u200B文\u202E逆")).toBe("本文逆");
   });
+
+  it("drops Word hidden text and one-point type, and keeps readable type", () => {
+    const html = [
+      "<html><head><style>",
+      "<!--",
+      "p.MsoNormal, li.MsoNormal, div.MsoNormal",
+      "\t{margin:0mm;font-size:10.5pt;font-family:\"Yu Gothic\",sans-serif;}",
+      "span.MsoHidden",
+      "\t{mso-style-name:\"隠し文字\";mso-hide:all;}",
+      "span.20",
+      "\t{mso-hide:all;}",
+      "-->",
+      "</style>",
+      "<!--[if gte mso 9]><style>span.Vanish{mso-hide:all}</style><![endif]-->",
+      "</head><body>",
+      "<p class=MsoNormal>見える本文です。<span class=MsoHidden>隠し文字の指示</span></p>",
+      "<p class=MsoNormal><span class=20>数字クラスの隠し</span></p>",
+      "<p class=MsoNormal><span class=Vanish>条件付き隠し</span></p>",
+      "<p class=MsoNormal><span style='mso-hide: all'>直書きの隠し</span></p>",
+      "<p class=MsoNormal><span style='MSO-HIDE:ALL !important'>大文字の隠し</span></p>",
+      "<p class=MsoNormal><span style='font-size:1.0pt'>一ポイントの行<span style='font-size:12pt'>中の見える</span></span></p>",
+      "<p class=MsoNormal><span style='FONT-SIZE: 1pt !important'>一点</span></p>",
+      "<p class=MsoNormal><span style='font-size:0.5pt'>半分</span></p>",
+      "<p class=MsoNormal><span style='font-size:2px'>極小ピクセル</span></p>",
+      "<p class=MsoNormal><span style='font-size:0'>ゼロ単位なし</span></p>",
+      "<p class=MsoNormal><span style='mso-hide:none'>隠さない</span></p>",
+      "<p class=MsoNormal><span style='font-size:10.5pt'>十ポイント半</span></p>",
+      "<p class=MsoNormal><span style='font-size:12px'>十二ピクセル</span></p>",
+      "<p class=MsoNormal><span style='color:white'>白い行</span></p>",
+      "<p class=MsoNormal>普通の行です。</p>",
+      "</body></html>",
+    ].join("\n");
+    const text = visibleMailText(html);
+    for (const hidden of [
+      "隠し文字の指示",
+      "数字クラスの隠し",
+      "条件付き隠し",
+      "直書きの隠し",
+      "大文字の隠し",
+      "一ポイントの行",
+      "一点",
+      "半分",
+      "極小ピクセル",
+      "ゼロ単位なし",
+      "白い行",
+    ]) {
+      expect(text).not.toContain(hidden);
+    }
+    expect(text).toContain("隠さない");
+    expect(text).toContain("中の見える");
+    expect(text).toContain("見える本文です。");
+    expect(text).toContain("十ポイント半");
+    expect(text).toContain("十二ピクセル");
+    expect(text).toContain("普通の行です。");
+    expect(sanitizeMailHtml(html)).not.toContain("隠し文字の指示");
+    expect(sanitizeMailHtml(html)).not.toContain("一ポイントの行");
+    expect(sanitizeMailHtml(html)).toContain("見える本文です。");
+  });
 });

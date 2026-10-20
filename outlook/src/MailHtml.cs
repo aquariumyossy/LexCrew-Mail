@@ -58,9 +58,18 @@ namespace KuruOutlook
             public int End;
         }
 
+        sealed class CssRule
+        {
+            public string Tag;
+            public string ClassName;
+            public string Id;
+            public string Decls;
+        }
+
         static string Walk(string input, bool plain)
         {
             string src = (input ?? "").Replace("\0", "");
+            List<CssRule> rules = CollectRules(src);
             var output = new StringBuilder();
             var frames = new List<Frame>();
             frames.Add(Root());
@@ -124,7 +133,7 @@ namespace KuruOutlook
                     continue;
                 }
                 bool subtree;
-                Frame frame = Derive(frames[frames.Count - 1], name, tag.Attrs, out subtree);
+                Frame frame = Derive(frames[frames.Count - 1], name, tag.Attrs, rules, out subtree);
                 if (subtree)
                 {
                     if (!tag.SelfClose && !IsVoid(name)) drop = 1;
@@ -173,9 +182,9 @@ namespace KuruOutlook
             frames.RemoveRange(idx, frames.Count - idx);
         }
 
-        static Frame Derive(Frame parent, string name, string attrs, out bool subtree)
+        static Frame Derive(Frame parent, string name, string attrs, List<CssRule> rules, out bool subtree)
         {
-            string style = StripCssComments(Decode(Attr(attrs, "style") ?? ""));
+            string style = MergedStyle(name, attrs, rules);
             int r = parent.R, g = parent.G, b = parent.B;
             double a = parent.A;
             int br = parent.BgR, bg = parent.BgG, bb = parent.BgB;
@@ -206,7 +215,8 @@ namespace KuruOutlook
             subtree = Regex.IsMatch(" " + (attrs ?? "") + " ", @"(?:^|\s)hidden(?:\s|=|$)", RegexOptions.IgnoreCase)
                 || Regex.IsMatch(style, @"display\s*:\s*none", RegexOptions.IgnoreCase)
                 || Regex.IsMatch(style, @"visibility\s*:\s*hidden", RegexOptions.IgnoreCase)
-                || OpacityHides(style);
+                || OpacityHides(style)
+                || MsoHides(style);
             return new Frame { Name = name, R = r, G = g, B = b, A = a, BgR = br, BgG = bg, BgB = bb, BgA = ba, ZeroFont = zeroFont };
         }
 
@@ -340,6 +350,168 @@ namespace KuruOutlook
             return match.Groups[3].Value;
         }
 
+        static List<CssRule> CollectRules(string html)
+        {
+            var rules = new List<CssRule>();
+            if (string.IsNullOrEmpty(html)) return rules;
+            MatchCollection styles = Regex.Matches(html, @"<style\b[^>]*>([\s\S]*?)</style>", RegexOptions.IgnoreCase);
+            for (int i = 0; i < styles.Count; i++)
+            {
+                string css = styles[i].Groups[1].Value;
+                css = css.Replace("<!--", "").Replace("-->", "");
+                css = Regex.Replace(css, @"/\*[\s\S]*?\*/", "");
+                ParseBlocks(css, rules);
+            }
+            return rules;
+        }
+
+        static void ParseBlocks(string css, List<CssRule> rules)
+        {
+            int i = 0;
+            while (i < css.Length)
+            {
+                int open = css.IndexOf('{', i);
+                if (open < 0) return;
+                int depth = 0;
+                int j = open;
+                for (; j < css.Length; j++)
+                {
+                    if (css[j] == '{') depth++;
+                    else if (css[j] == '}')
+                    {
+                        depth--;
+                        if (depth == 0) break;
+                    }
+                }
+                if (depth != 0) return;
+                string selector = css.Substring(i, open - i).Trim();
+                string body = css.Substring(open + 1, j - open - 1);
+                i = j + 1;
+                if (selector.Length == 0) continue;
+                if (selector.IndexOf('@') >= 0 || body.IndexOf('{') >= 0)
+                {
+                    ParseBlocks(body, rules);
+                    continue;
+                }
+                string[] parts = selector.Split(',');
+                for (int p = 0; p < parts.Length; p++)
+                {
+                    string tag;
+                    string className;
+                    string id;
+                    if (TrySimpleSelector(parts[p].Trim(), out tag, out className, out id))
+                    {
+                        rules.Add(new CssRule { Tag = tag, ClassName = className, Id = id, Decls = body });
+                    }
+                }
+            }
+        }
+
+        static bool TrySimpleSelector(string sel, out string tag, out string className, out string id)
+        {
+            tag = "";
+            className = "";
+            id = "";
+            string cleaned = Regex.Replace(sel ?? "", @":+[A-Za-z_-]+(?:\([^)]*\))?", "").Trim();
+            if (cleaned.Length == 0 || Regex.IsMatch(cleaned, @"[\s>+~\[\]*]")) return false;
+            Match match = Regex.Match(cleaned, @"^([A-Za-z][A-Za-z0-9]*)?(?:\.(-?[A-Za-z0-9_-]+)|#([A-Za-z0-9_-]+))?$");
+            if (!match.Success) return false;
+            if (!match.Groups[1].Success && !match.Groups[2].Success && !match.Groups[3].Success) return false;
+            tag = match.Groups[1].Success ? match.Groups[1].Value.ToLowerInvariant() : "";
+            className = match.Groups[2].Success ? match.Groups[2].Value.ToLowerInvariant() : "";
+            id = match.Groups[3].Success ? match.Groups[3].Value.ToLowerInvariant() : "";
+            return true;
+        }
+
+        sealed class Decl
+        {
+            public string Value;
+            public int Score;
+        }
+
+        static string MergedStyle(string name, string attrs, List<CssRule> rules)
+        {
+            string classAttr = (Attr(attrs, "class") ?? "").ToLowerInvariant();
+            var classes = new List<string>();
+            foreach (string piece in classAttr.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                classes.Add(piece);
+            }
+            string id = (Attr(attrs, "id") ?? "").ToLowerInvariant();
+            var chunks = new List<string>();
+            var scores = new List<int>();
+            if (rules != null)
+            {
+                for (int i = 0; i < rules.Count; i++)
+                {
+                    CssRule rule = rules[i];
+                    if (rule.Tag.Length > 0 && rule.Tag != name) continue;
+                    if (rule.ClassName.Length > 0 && !classes.Contains(rule.ClassName)) continue;
+                    if (rule.Id.Length > 0 && rule.Id != id) continue;
+                    int score = 0;
+                    if (rule.Tag.Length > 0) score += 1;
+                    if (rule.ClassName.Length > 0) score += 10;
+                    if (rule.Id.Length > 0) score += 100;
+                    chunks.Add(rule.Decls);
+                    scores.Add(score);
+                }
+            }
+            string inline = Attr(attrs, "style");
+            if (!string.IsNullOrEmpty(inline))
+            {
+                chunks.Add(inline);
+                scores.Add(1000);
+            }
+            return MergeDecls(chunks, scores);
+        }
+
+        static string MergeDecls(List<string> chunks, List<int> scores)
+        {
+            var map = new Dictionary<string, Decl>();
+            var order = new List<string>();
+            for (int i = 0; i < chunks.Count; i++)
+            {
+                string cleaned = StripCssComments(Decode(chunks[i]));
+                string[] parts = cleaned.Split(';');
+                for (int p = 0; p < parts.Length; p++)
+                {
+                    int idx = parts[p].IndexOf(':');
+                    if (idx < 0) continue;
+                    string prop = parts[p].Substring(0, idx).Trim().ToLowerInvariant();
+                    if (prop.Length == 0) continue;
+                    string value = parts[p].Substring(idx + 1).Trim();
+                    bool important = Regex.IsMatch(value, @"!important", RegexOptions.IgnoreCase);
+                    value = Regex.Replace(value, @"!important", "", RegexOptions.IgnoreCase).Trim();
+                    int score = scores[i] + (important ? 10000 : 0);
+                    Decl prev;
+                    if (!map.TryGetValue(prop, out prev))
+                    {
+                        order.Add(prop);
+                        map[prop] = new Decl { Value = value, Score = score };
+                    }
+                    else if (score >= prev.Score)
+                    {
+                        prev.Value = value;
+                        prev.Score = score;
+                    }
+                }
+            }
+            var built = new StringBuilder();
+            for (int i = 0; i < order.Count; i++)
+            {
+                if (i > 0) built.Append(';');
+                built.Append(order[i]).Append(':').Append(map[order[i]].Value);
+            }
+            return built.ToString();
+        }
+
+        static bool MsoHides(string style)
+        {
+            string value = LastDecl(style, "mso-hide");
+            if (string.IsNullOrEmpty(value)) return false;
+            return Regex.IsMatch(value.Trim(), @"^all\b", RegexOptions.IgnoreCase);
+        }
+
         static string LastDecl(string style, string name)
         {
             if (string.IsNullOrEmpty(style)) return null;
@@ -378,8 +550,8 @@ namespace KuruOutlook
             if (!double.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out n)) return false;
             string unit = match.Groups[2].Success ? match.Groups[2].Value.ToLowerInvariant() : "px";
             if (n <= 0) zero = true;
-            else if (unit == "px" && n < 1) zero = true;
-            else if (unit == "pt" && n < 0.75) zero = true;
+            else if (unit == "px" && n <= 2) zero = true;
+            else if (unit == "pt" && n <= 1) zero = true;
             else if ((unit == "em" || unit == "rem") && n < 0.08) zero = true;
             else if (unit == "%" && n < 8) zero = true;
             return true;
