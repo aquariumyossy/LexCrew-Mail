@@ -22,16 +22,18 @@ describe("issueLocalhostCertificate", () => {
     expect(parsed.subject).toBe("CN=127.0.0.1");
     expect(parsed.issuer).toBe("CN=127.0.0.1");
     expect(parsed.subjectAltName).toBe("IP Address:127.0.0.1");
-    expect(parsed.ca).toBe(false);
     expect(parsed.checkIP("127.0.0.1")).toBe("127.0.0.1");
     expect(parsed.checkIP("10.0.0.1")).toBeUndefined();
     expect(parsed.verify(parsed.publicKey)).toBe(true);
     expect(parsed.checkPrivateKey(crypto.createPrivateKey(key))).toBe(true);
     expect(parsed.validFromDate.toISOString()).toBe("2026-10-19T00:00:00.000Z");
     expect(parsed.validToDate.toISOString()).toBe(new Date(now.getTime() + 10 * 365 * 24 * 60 * 60 * 1000).toISOString());
-    expect(parsed.raw.includes(Buffer.from([0x03, 0x02, 0x05, 0xa0]))).toBe(true);
-    expect(parsed.raw.includes(Buffer.from([0x87, 0x04, 0x7f, 0x00, 0x00, 0x01]))).toBe(true);
-    expect(parsed.raw.includes(Buffer.from([0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01]))).toBe(true);
+    // CA:FALSE、digitalSignature|keyEncipherment、serverAuth、SAN IP 127.0.0.1。順序と critical も含む。
+    const extensions = Buffer.from(
+      "a340303e30090603551d1304023000300b0603551d0f0404030205a030130603551d25040c300a06082b06010505070301300f0603551d110408300687047f000001",
+      "hex"
+    );
+    expect(parsed.raw.includes(extensions)).toBe(true);
   });
 
   it("serves HTTPS with that certificate", async () => {
