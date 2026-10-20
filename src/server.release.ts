@@ -6,6 +6,7 @@ import express from "express";
 import forge from "node-forge";
 import { HOST, PORT } from "./shared/constants";
 import { createApp } from "./sidecar/app";
+import { sessionTokenPath, writeSessionToken } from "./sidecar/sessionAuth";
 
 const dataDir = path.join(process.env.LOCALAPPDATA || path.join(process.cwd(), ".kuru-data"), "KURU");
 const logFile = path.join(dataDir, "server.log");
@@ -60,12 +61,19 @@ async function main(): Promise<void> {
   app.get("/", (_req, res) => {
     res.redirect("/taskpane.html");
   });
-  app.use(express.static(staticDir, { maxAge: 0 }));
+  app.use(express.static(staticDir, {
+    etag: false,
+    lastModified: false,
+    setHeaders(res) {
+      res.setHeader("Cache-Control", "no-store");
+    },
+  }));
 
   const server = https.createServer(loadCertificate(), app);
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(PORT, HOST, () => {
+      writeSessionToken(sessionTokenPath(), String(app.locals.sessionToken || ""));
       log(`listening https://${HOST}:${PORT} static ${staticDir}`);
       resolve();
     });

@@ -29,19 +29,24 @@ import {
   sameFile,
   tooManyFiles,
 } from "../shared/attachedFiles";
+import { plainHttpLanWarning, visibleLanHttpWarning, withLanHttpDismissed } from "../shared/endpoint";
+import { connectionNotice, llmConfigured } from "./connectionState";
+import { DraftChange, renderDraftConfirm, ThreadSnapshot } from "../shared/draftGate";
 import { REMOTE_OCR_NOTICE } from "../shared/ocr";
 import { THINKING_LEVELS, THINKING_LEVEL_LABELS } from "../shared/thinking";
 import { MAIL_FONTS, MAIL_FONT_SIZE_MAX, MAIL_FONT_SIZE_MIN, MAIL_FONT_SIZE_STEP, mailFontSizeFromInput, normalizeMailFontId } from "../shared/mailFont";
 import { countOutgoingTokens } from "../shared/meter";
 import { Memory, Party, renderMemorySection } from "../shared/memory";
-import { renderMailHeader, systemPrompt } from "../shared/prompts";
-import { ScopeRow, Settings, TextSetting, UiFontSize, adoptStoredConnection, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
+import { currentBuildStamp, formatBuildStamp, staleBuildWarning } from "../shared/buildStamp";
+import { renderMailData, renderMailRules, systemPrompt } from "../shared/prompts";
+import { ScopeRow, Settings, TextSetting, UiFontSize, adoptStoredConnection, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, fetchSidecarBuild, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
 import { badgeLabel, ingestBytes, ingestFile, ocrScan, readErrorMessage } from "./files/attach";
-import { conversationKey, currentHostMode, listMailFiles, openThreadKey, outlookReady, readMailFile, readMailHeader, readParties } from "./host";
+import { conversationKey, currentHostMode, HOST_ITEM_UNKNOWN, listMailFiles, openItemId, openThreadKey, outlookReady, readConversation, readHostContext, readMailFile, readMailHeader, readParties } from "./host";
 import { HeldMailFile, MAIL_ATTACH_HINT, MailAttachPlan, mailChipNote, planMailAttach } from "./mailAttach";
 import { collectFreeSlots } from "./slots";
 import { renderMarkdown } from "./markdown";
 import { runTurn } from "./runTurn";
+import { acceptTurnEvent, activeMailText, adoptLoadedLines, adoptStartedConversation, beginNewConversation, confirmationApplies, deleteShownConversation, detachPreviousMail, restoreDecision, sendTarget, transcriptSurvivesItemSwitch } from "./conversationState";
 import { Parked, decideThread, park, splitHistory, unpark } from "./threadView";
 import { aboutCopy } from "./about";
 
@@ -89,6 +94,9 @@ export function mount(root: HTMLElement): void {
   let conversationId = "";
   let freshConversation = false;
   let shownKey = "";
+  let shownItemId = "";
+  let hostUnresolved = false;
+  let viewEpoch = 0;
   let threadSync: Promise<void> | null = null;
   let threadBanner = false;
   const threadDrafts = new Map<string, Parked<FileSource>>();
@@ -103,7 +111,8 @@ export function mount(root: HTMLElement): void {
   let committed: CommittedFile[] = [];
   let memory: Memory = { notes: [], people: [] };
   let parties: Party[] = [];
-  let mailHeader: Parameters<typeof renderMailHeader>[0] = null;
+  let mailHeader: Parameters<typeof renderMailRules>[0] = null;
+  let apiKeyOnFile = false;
   let openFileList: "pending" | "kept" | "mail" | null = null;
   let mailGuide = false;
   let mailNotice = "";
@@ -138,11 +147,19 @@ export function mount(root: HTMLElement): void {
   actions.append(historyBtn, memoryBtn, missing, connectBtn, scheduleBtn, settingsBtn, infoBtn);
   header.append(meter, actions);
 
+  const lanWarn = el("div");
+  lanWarn.className = "lan-warn";
+  lanWarn.hidden = true;
+  const buildWarn = el("p");
+  buildWarn.className = "lan-warn";
+  buildWarn.hidden = true;
   const bannerHost = el("div");
+  const confirmHost = el("div");
+  confirmHost.hidden = true;
   const chat = el("div");
   chat.className = "chat";
   const composer = buildComposer();
-  app.append(header, bannerHost, chat, composer.box);
+  app.append(header, lanWarn, buildWarn, bannerHost, confirmHost, chat, composer.box);
   root.append(app);
 
   const dialog = buildDialog(root);
@@ -235,6 +252,7 @@ export function mount(root: HTMLElement): void {
   async function start(): Promise<void> {
     try {
       const result = await adoptStoredConnection(connectionFields(settings));
+      if (result.kind === "ready") apiKeyOnFile = result.hasApiKey === true;
       settings = takeAdoptedSettings(settings, result);
       if (result.kind === "ready") saveSettings(settings);
     } catch {
@@ -248,12 +266,24 @@ export function mount(root: HTMLElement): void {
       })
       .catch(() => {});
     void runHealth();
+    void checkBuild();
     void syncThread();
     setInterval(() => syncThread(), 1000);
   }
 
   function paint(): void {
-    missing.hidden = Boolean(settings.llmBaseUrl.trim() && settings.llmApiKey.trim());
+    lanWarn.replaceChildren();
+    const shownUrl = settings.llmBaseUrl;
+    const lan = visibleLanHttpWarning(shownUrl, settings.dismissedLanHttpUrl);
+    lanWarn.hidden = !lan;
+    if (lan) {
+      lanWarn.append(bannerView({ kind: "warning", text: lan }, () => {
+        settings = withLanHttpDismissed(settings, shownUrl);
+        saveSettings(settings);
+        paint();
+      }));
+    }
+    missing.hidden = llmConfigured({ llmBaseUrl: settings.llmBaseUrl, llmApiKey: settings.llmApiKey, hasApiKey: apiKeyOnFile });
     bannerHost.textContent = "";
     if (banner) bannerHost.append(bannerView(banner, () => { banner = null; paint(); }));
     chat.textContent = "";
@@ -293,6 +323,132 @@ export function mount(root: HTMLElement): void {
     mailHeader = readMailHeader();
   }
 
+  function currentThread(): ThreadSnapshot {
+    const header = readMailHeader();
+    const conversation = readConversation();
+    return {
+      subject: header?.subject ?? "",
+      from: header?.from ?? "",
+      to: header?.to ?? [],
+      cc: header?.cc ?? [],
+      bcc: header?.bcc ?? [],
+      parties: readParties(),
+      messages: conversation.messages,
+      source: conversation.source,
+    };
+  }
+
+  function isolateView(): void {
+    viewEpoch += 1;
+    const abort = turnAbort;
+    turnAbort = null;
+    abort?.abort();
+    busy = false;
+    confirmHost.hidden = true;
+    confirmHost.replaceChildren();
+    parties = [];
+    mailHeader = null;
+  }
+
+  function askDraft(changes: DraftChange[]): Promise<boolean> {
+    const bound = openItemId();
+    const view = renderDraftConfirm(changes);
+    return askConfirm((finish) => {
+      const box = el("div");
+      box.className = "confirm";
+      if (view.warning) {
+        const warn = el("p", view.warning);
+        warn.className = "confirm-warn";
+        box.append(warn);
+        const list = el("ul");
+        list.className = "outside-addresses";
+        for (const address of view.outside) {
+          const item = el("li", address);
+          item.className = "outside-address";
+          list.append(item);
+        }
+        box.append(list);
+      }
+      box.append(el("p", "件名または宛先を変えます"));
+      for (const row of view.rows) {
+        const block = el("div");
+        block.append(el("p", row.label));
+        block.append(el("p", `変更前: ${row.before}`));
+        block.append(el("p", `変更後: ${row.after}`));
+        box.append(block);
+      }
+      box.append(confirmActions(finish));
+      confirmHost.append(box);
+    }, false).then((approved) => approved && confirmationApplies(bound, openItemId()));
+  }
+
+  function askSearch(query: string): Promise<string | null> {
+    return askConfirm<string | null>((finish) => {
+      const box = el("div");
+      box.className = "confirm";
+      box.append(el("p", "ウェブ検索します"));
+      const input = document.createElement("input");
+      input.value = query;
+      input.setAttribute("aria-label", "検索語");
+      const row = el("div");
+      row.className = "confirm-actions";
+      const go = el("button", "検索");
+      go.type = "button";
+      go.className = "primary";
+      const cancel = el("button", "キャンセル");
+      cancel.type = "button";
+      const submit = () => finish(input.value);
+      go.addEventListener("click", submit);
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          submit();
+        }
+      });
+      cancel.addEventListener("click", () => finish(null));
+      row.append(go, cancel);
+      box.append(input, row);
+      confirmHost.append(box);
+      input.focus();
+    }, null);
+  }
+
+  function confirmActions(finish: (approved: boolean) => void): HTMLElement {
+    const row = el("div");
+    row.className = "confirm-actions";
+    const apply = el("button", "適用");
+    apply.type = "button";
+    apply.className = "primary";
+    const cancel = el("button", "キャンセル");
+    cancel.type = "button";
+    apply.addEventListener("click", () => finish(true));
+    cancel.addEventListener("click", () => finish(false));
+    row.append(apply, cancel);
+    return row;
+  }
+
+  function askConfirm<T>(render: (finish: (value: T) => void) => void, onAbort: T): Promise<T> {
+    confirmHost.hidden = false;
+    confirmHost.replaceChildren();
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (value: T) => {
+        if (done) return;
+        done = true;
+        confirmHost.hidden = true;
+        confirmHost.replaceChildren();
+        resolve(value);
+      };
+      const signal = turnAbort?.signal;
+      if (signal?.aborted) {
+        finish(onAbort);
+        return;
+      }
+      signal?.addEventListener("abort", () => finish(onAbort), { once: true });
+      render(finish);
+    });
+  }
+
   function refreshMeter(): void {
     const readyPending = pending.filter(isReady).map(commit);
     const tokens = countOutgoingTokens({
@@ -308,7 +464,8 @@ export function mount(root: HTMLElement): void {
       searxng: Boolean(settings.searxngUrl.trim()),
       argos: Boolean(settings.argosBaseUrl.trim()),
       memory: renderMemorySection(memory, parties),
-      mail: renderMailHeader(mailHeader),
+      mail: renderMailRules(mailHeader),
+      mailData: renderMailData(mailHeader),
     });
     const warn = settings.contextLimit > 0 && tokens / settings.contextLimit >= 0.8;
     meterCount.textContent = `${tokens.toLocaleString("ja-JP")} / ${settings.contextLimit.toLocaleString("ja-JP")}`;
@@ -317,8 +474,9 @@ export function mount(root: HTMLElement): void {
   }
 
   async function runHealth(): Promise<void> {
-    if (!settings.llmBaseUrl.trim() || !settings.llmApiKey.trim()) {
-      banner = { kind: "warning", text: "接続の URL と API キーを入れてください。" };
+    const notice = connectionNotice({ llmBaseUrl: settings.llmBaseUrl, llmApiKey: settings.llmApiKey, hasApiKey: apiKeyOnFile });
+    if (notice) {
+      banner = { kind: "warning", text: notice };
       paint();
       return;
     }
@@ -397,40 +555,57 @@ export function mount(root: HTMLElement): void {
     }
     busy = true;
     turnAbort = new AbortController();
+    const epoch = viewEpoch;
     paint();
     try {
-      const wasFresh = freshConversation;
+      const target = sendTarget({ conversationId, fresh: freshConversation });
+      const wasFresh = target.kind === "create";
       const conversation =
-        conversationId && !freshConversation
-          ? { id: conversationId }
-          : await ensureConversation(conversationKey(), freshConversation);
-      freshConversation = false;
-      conversationId = conversation.id;
+        target.kind === "existing"
+          ? { id: target.id }
+          : await ensureConversation(conversationKey(), target.kind === "create");
+      const started = adoptStartedConversation(epoch, viewEpoch, conversation.id, {
+        conversationId,
+        fresh: freshConversation,
+      });
+      if (!started.adopt) return;
+      freshConversation = started.fresh;
+      conversationId = started.conversationId;
       if (!wasFresh && filesFor !== conversation.id) {
         const loaded = await loadConversation(conversation.id);
+        if (!acceptTurnEvent(epoch, viewEpoch)) return;
         committed = mergeFiles(loaded.files, committed);
       }
       filesFor = conversation.id;
       committed = mergeFiles(committed, pending.filter(isReady).map(commit));
       pending = pending.filter((row) => row.status !== "ready");
       committed = await saveConversationFiles(conversation.id, committed);
+      if (!acceptTurnEvent(epoch, viewEpoch)) return;
       const hasFiles = committed.length > 0;
+      const cachedItem = shownItemId;
+      const cachedMail = renderMailData(mailHeader);
       rememberMail();
+      const liveItem = openItemId();
+      if (liveItem) shownItemId = liveItem;
       const memoryText = renderMemorySection(memory, parties);
-      const mailText = renderMailHeader(mailHeader);
+      const mailText = renderMailRules(mailHeader);
+      const mailData = activeMailText(cachedItem, cachedMail, liveItem, renderMailData(mailHeader));
       const reserved = systemPrompt({
         files: hasFiles,
         searxng: Boolean(settings.searxngUrl.trim()),
         argos: Boolean(settings.argosBaseUrl.trim()),
         memory: memoryText,
         mail: mailText,
-      }).length + instruction.length;
+      }).length + mailData.length + instruction.length;
       const forModel = modelTurnText(instruction, committed, settings.contextLimit, reserved);
       const forHistory = historyTurnText(instruction, committed, settings.contextLimit, reserved);
+      if (!acceptTurnEvent(epoch, viewEpoch)) return;
       thread.push({ role: "user", content: forHistory });
       paint();
       await storeMessage(conversation.id, { role: "user", content: forHistory });
+      if (!acceptTurnEvent(epoch, viewEpoch)) return;
       const history = await loadMessages(conversation.id);
+      if (!acceptTurnEvent(epoch, viewEpoch)) return;
       const prior = history.slice(0, -1);
       await runTurn({
         settings,
@@ -439,9 +614,15 @@ export function mount(root: HTMLElement): void {
         hasFiles,
         memory: memoryText,
         mail: mailText,
+        mailData,
         pathPrefixes,
+        readThread: currentThread,
+        confirmDraft: askDraft,
+        confirmSearch: askSearch,
+        currentItemId: openItemId,
         signal: turnAbort.signal,
         onDelta: (snapshot) => {
+          if (!acceptTurnEvent(epoch, viewEpoch)) return;
           const draft = thread.find((row) => row.streaming);
           if (draft) {
             draft.content = snapshot.content;
@@ -452,6 +633,7 @@ export function mount(root: HTMLElement): void {
           paint();
         },
         onMessage: (message) => {
+          if (!acceptTurnEvent(epoch, viewEpoch)) return;
           const draft = thread.findIndex((row) => row.streaming);
           if (draft >= 0) thread.splice(draft, 1);
           thread.push({
@@ -473,22 +655,27 @@ export function mount(root: HTMLElement): void {
       });
       banner = null;
     } catch (error) {
+      if (!acceptTurnEvent(epoch, viewEpoch)) return;
       const draft = thread.findIndex((row) => row.streaming);
       if (draft >= 0) thread.splice(draft, 1);
       const aborted = error instanceof DOMException && error.name === "AbortError";
       banner = aborted ? null : { kind: "error", text: error instanceof Error ? error.message : "失敗しました。" };
     } finally {
-      busy = false;
-      turnAbort = null;
-      paint();
+      if (acceptTurnEvent(epoch, viewEpoch)) {
+        busy = false;
+        turnAbort = null;
+        paint();
+      }
     }
   }
 
   function openMessageError(): string | null {
     try {
-      const mode = currentHostMode();
+      const context = readHostContext();
+      if (context.error === HOST_ITEM_UNKNOWN) return context.error;
+      const mode = context.mode || currentHostMode();
       if (mode === "read" || mode === "compose") return null;
-      if (mode === "none") return "メールが選択されていません。";
+      if (mode === "none") return context.error || "メールが選択されていません。";
       return "予定は本文を書きません。";
     } catch (error) {
       return error instanceof Error ? error.message : "メールが選択されていません。";
@@ -693,6 +880,7 @@ export function mount(root: HTMLElement): void {
     try {
       const result = await fetchConnection();
       if (result.kind === "ready") {
+        apiKeyOnFile = result.hasApiKey === true;
         settings = takeAdoptedSettings(settings, result);
         saveSettings(settings);
       }
@@ -895,7 +1083,7 @@ export function mount(root: HTMLElement): void {
       ),
       labeled(
         "ツール往復の上限",
-        "1回の指示あたり。コメントが多い点検は32か制限なし。上限に達するとチャットに知らせます。止まらなければキャンセルしてください。",
+        "1回の指示あたり。コメントが多い点検は32まで。上限に達するとチャットに知らせます。止まらなければキャンセルしてください。",
         choices(
           "tool-rounds",
           TOOL_ROUND_PRESETS.map((rounds) => ({ value: String(rounds), label: toolRoundPresetLabel(rounds) })),
@@ -986,9 +1174,22 @@ export function mount(root: HTMLElement): void {
     return input;
   }
 
+  async function checkBuild(): Promise<void> {
+    try {
+      const sidecar = await fetchSidecarBuild();
+      const warning = staleBuildWarning(formatBuildStamp(currentBuildStamp()), sidecar.build, sidecar.reachable);
+      buildWarn.hidden = !warning;
+      buildWarn.textContent = warning ?? "";
+    } catch {
+      buildWarn.hidden = true;
+    }
+  }
+
   function openInfo(): void {
     const stack = el("div");
     stack.className = "stack";
+    stack.append(aboutHeading("ビルド"));
+    stack.append(note(formatBuildStamp(currentBuildStamp())));
     stack.append(aboutHeading("概要"));
     for (const paragraph of aboutCopy.overview) stack.append(note(paragraph));
     stack.append(aboutHeading("機能"));
@@ -1032,6 +1233,20 @@ export function mount(root: HTMLElement): void {
       const wrap = el("label");
       wrap.append(el("span", label), input);
       stack.append(wrap);
+      if (name === "llmBaseUrl") {
+        const warn = note("");
+        const refreshWarn = () => {
+          const text = plainHttpLanWarning(input.value);
+          warn.hidden = !text;
+          warn.textContent = text ?? "";
+        };
+        input.addEventListener("input", refreshWarn);
+        refreshWarn();
+        stack.append(warn);
+      }
+      if (name === "llmApiKey" && apiKeyOnFile && !settings.llmApiKey.trim()) {
+        input.placeholder = "保存済み（変えるときだけ入力）";
+      }
       if (name === "model" && models.length) {
         const row = el("div");
         row.className = "chips";
@@ -1063,8 +1278,9 @@ export function mount(root: HTMLElement): void {
       failure.hidden = true;
       save.disabled = true;
       void saveStoredConnection(connectionFields(next))
-        .then(() => {
-          settings = takeAdoptedSettings(next, { kind: "ready", ...connectionFields(next) });
+        .then((result) => {
+          if (result.kind === "ready") apiKeyOnFile = result.hasApiKey === true;
+          settings = takeAdoptedSettings(next, result);
           saveSettings(settings);
           dialog.close();
           void runHealth();
@@ -1164,11 +1380,14 @@ export function mount(root: HTMLElement): void {
     newer.type = "button";
     newer.className = "primary history-new";
     newer.addEventListener("click", () => {
+      isolateView();
       dropFiles();
-      conversationId = "";
-      freshConversation = true;
+      const next = beginNewConversation();
+      conversationId = next.conversationId;
+      freshConversation = next.fresh;
       filesFor = "";
       thread.splice(0, thread.length);
+      rememberMail();
       dialog.close();
       paint();
     });
@@ -1218,10 +1437,14 @@ export function mount(root: HTMLElement): void {
       remove.addEventListener("click", () => {
         void deleteConversation(row.id).then(() => {
           if (conversationId === row.id) {
+            const next = deleteShownConversation({ conversationId, fresh: freshConversation }, row.id);
+            isolateView();
             dropFiles();
-            conversationId = "";
+            conversationId = next.conversationId;
+            freshConversation = next.fresh;
             filesFor = "";
             thread.splice(0, thread.length);
+            rememberMail();
             paint();
           }
           void openHistory();
@@ -1244,20 +1467,23 @@ export function mount(root: HTMLElement): void {
     paint();
   }
 
-  async function restoreConversation(id: string): Promise<void> {
+  async function restoreConversation(id: string, startedEpoch?: number): Promise<boolean> {
     const loaded = await loadConversation(id);
+    const settled = adoptLoadedLines(startedEpoch ?? viewEpoch, viewEpoch, loaded.messages, []);
+    if (startedEpoch !== undefined && !settled.adopt) return false;
     clearThread();
     conversationId = id;
     freshConversation = false;
     filesFor = id;
     committed = loaded.files;
-    thread.splice(0, thread.length, ...loaded.messages.map((message) => ({
+    thread.splice(0, thread.length, ...settled.lines.map((message) => ({
       role: message.role,
       content: message.content,
       reasoningContent: message.reasoningContent,
       toolCalls: message.tool_calls,
       toolCallId: message.tool_call_id,
     })));
+    return true;
   }
 
   function clearThread(): void {
@@ -1268,13 +1494,57 @@ export function mount(root: HTMLElement): void {
   }
 
   function syncThread(): void {
-    if (!outlookReady() || document.visibilityState === "hidden" || threadSync) return;
+    if (!outlookReady() || document.visibilityState === "hidden") return;
     let observed = "";
+    let itemId = "";
+    let hostError = "";
     try {
-      observed = openThreadKey();
+      const context = readHostContext();
+      observed = context.conversationId;
+      itemId = context.itemId;
+      hostError = context.error;
     } catch {
       return;
     }
+    if (hostError === HOST_ITEM_UNKNOWN) {
+      if (!hostUnresolved) {
+        hostUnresolved = true;
+        isolateView();
+        dropFiles();
+        conversationId = "";
+        freshConversation = true;
+        filesFor = "";
+        thread.splice(0, thread.length);
+        shownItemId = "";
+        shownKey = "";
+        banner = { kind: "error", text: hostError };
+        paint();
+      }
+      return;
+    }
+    hostUnresolved = false;
+    if (itemId && itemId !== shownItemId) {
+      const keepTranscript = transcriptSurvivesItemSwitch(shownKey, observed);
+      isolateView();
+      shownItemId = itemId;
+      if (!keepTranscript) {
+        if (!observed && shownKey) {
+          park(threadDrafts, shownKey, { text: composer.input.value, pending: pending.slice() });
+        }
+        dropFiles();
+        conversationId = "";
+        filesFor = "";
+        thread.splice(0, thread.length);
+        if (!observed) {
+          composer.input.value = "";
+          shownKey = "";
+          fit(composer.input);
+        }
+      }
+      rememberMail();
+      paint();
+    }
+    if (threadSync) return;
     const move = decideThread(shownKey, observed, {
       busy,
       loading: pending.some(isPending) || mailJobs.some(isPending),
@@ -1290,6 +1560,7 @@ export function mount(root: HTMLElement): void {
   }
 
   async function applyThread(key: string): Promise<void> {
+    const epoch = viewEpoch;
     const typed = { text: composer.input.value, pending: pending.slice() };
     const carried = !shownKey && !conversationId ? committed.slice() : [];
     if (shownKey) {
@@ -1306,8 +1577,33 @@ export function mount(root: HTMLElement): void {
       if (tookSaved) park(threadDrafts, key, draft);
       if (kept.length) unsavedKept.set(key, kept);
     };
+    const keepFresh = freshConversation;
+    const previousTranscript = {
+      conversationId,
+      fresh: freshConversation,
+      lines: thread.map((row) => ({ ...row })),
+      committed: committed.slice(),
+      filesFor,
+    };
+    const restorePrevious = () => {
+      conversationId = previousTranscript.conversationId;
+      freshConversation = previousTranscript.fresh;
+      thread.splice(0, thread.length, ...previousTranscript.lines);
+      committed = previousTranscript.committed;
+      filesFor = previousTranscript.filesFor;
+    };
+    const detached = detachPreviousMail({ conversationId, fresh: freshConversation });
+    conversationId = detached.conversationId;
+    freshConversation = keepFresh || detached.fresh;
+    thread.splice(0, thread.length);
+    filesFor = "";
+    committed = [];
     try {
       const rows = await listConversations(key);
+      if (!acceptTurnEvent(epoch, viewEpoch)) {
+        putBack();
+        return;
+      }
       let current = "";
       try {
         current = openThreadKey();
@@ -1315,17 +1611,26 @@ export function mount(root: HTMLElement): void {
         current = "";
       }
       if (current !== key) {
+        if (!freshConversation) restorePrevious();
         putBack();
         return;
       }
-      if (rows[0]) {
-        await restoreConversation(rows[0].id);
+      const decision = restoreDecision({ conversationId, fresh: freshConversation }, rows[0] ? { id: rows[0].id } : null);
+      freshConversation = decision.state.fresh;
+      conversationId = decision.state.conversationId;
+      if (decision.restoreId) {
+        const restored = await restoreConversation(decision.restoreId, epoch);
+        if (!restored) {
+          putBack();
+          return;
+        }
         if (kept.length) committed = mergeFiles(committed, kept);
-      } else {
+      } else if (!decision.state.fresh) {
         clearThread();
         committed = kept;
+      } else {
+        committed = kept;
       }
-      freshConversation = false;
       shownKey = key;
       rememberMail();
       composer.input.value = draft.text;
@@ -1338,6 +1643,11 @@ export function mount(root: HTMLElement): void {
       paint();
       refreshMailAttachments();
     } catch (error) {
+      if (!acceptTurnEvent(epoch, viewEpoch)) {
+        putBack();
+        return;
+      }
+      if (!freshConversation) restorePrevious();
       putBack();
       const text = error instanceof Error ? error.message : "このメールの会話を読めません。";
       if (banner?.text !== text) {
@@ -1485,6 +1795,7 @@ export function mount(root: HTMLElement): void {
       const bytes = await readMailFile(index);
       abort.signal.throwIfAborted();
       await ingestBytes({
+        hasApiKey: apiKeyOnFile,
         name: base.name,
         bytes,
         base,
@@ -1530,6 +1841,7 @@ export function mount(root: HTMLElement): void {
       base,
       pages,
       settings,
+      hasApiKey: apiKeyOnFile,
       signal: abort.signal,
       onUpdate: putMail,
       onRemote: noteRemoteOcr,
@@ -1569,6 +1881,7 @@ export function mount(root: HTMLElement): void {
         file,
         base,
         settings,
+        hasApiKey: apiKeyOnFile,
         signal: abort.signal,
         onUpdate: putFile,
         onRemote: noteRemoteOcr,
@@ -2231,6 +2544,15 @@ function css(): string {
     .icon svg, .banner svg { width: 16px; height: 16px; }
     .icon:hover { background: #f0f0f0; }
     .header .icon:hover { background: #d2eff9; }
+    .lan-warn { margin: 0; color: #8a5a00; font-size: 0.857rem; line-height: 16px; }
+    .lan-warn[hidden] { display: none; }
+    .confirm { border: 1px solid #d0d0d0; border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 6px; background: #fff; }
+    .confirm p { margin: 0; white-space: pre-wrap; word-break: break-word; }
+    .confirm-warn { color: #8a5a00; font-weight: 600; }
+    .outside-addresses { margin: 0; padding-left: 1.2em; }
+    .outside-address { color: #8a5a00; font-weight: 600; }
+    .confirm input { border: 1px solid #d0d0d0; border-radius: 6px; padding: 4px 6px; }
+    .confirm-actions { display: flex; gap: 6px; }
     .banner { display: flex; align-items: flex-start; gap: 8px; border-radius: 4px; padding: 6px 8px; font-size: 0.857rem; line-height: 16px; }
     .banner span { flex: 1; white-space: pre-wrap; }
     .banner.success, .banner.warning, .banner.error { background: #f5f5f5; color: #1a1a1a; border: 1px solid #d0d0d0; }

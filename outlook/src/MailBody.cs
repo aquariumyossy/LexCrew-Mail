@@ -7,21 +7,24 @@ namespace KuruOutlook
     {
         public static string VisibleText(string html)
         {
-            if (string.IsNullOrEmpty(html))
+            return MailHtml.ToPlain(html);
+        }
+
+        /** Quote excerpts do not include the head, where Word puts class rules such as mso-hide. */
+        public static string WithHeadStyles(string html, string fragment)
+        {
+            if (string.IsNullOrEmpty(fragment)) return fragment ?? "";
+            if (string.IsNullOrEmpty(html)) return fragment;
+            System.Text.RegularExpressions.MatchCollection styles = Regex.Matches(html, @"<style\b[^>]*>[\s\S]*?</style>", RegexOptions.IgnoreCase);
+            if (styles.Count == 0) return fragment;
+            var prefix = new System.Text.StringBuilder();
+            for (int i = 0; i < styles.Count; i++)
             {
-                return "";
+                if (fragment.IndexOf(styles[i].Value, System.StringComparison.Ordinal) >= 0) continue;
+                prefix.Append(styles[i].Value);
             }
-            string text = html;
-            text = StripBlock(text, "head");
-            text = StripBlock(text, "style");
-            text = StripBlock(text, "script");
-            text = Regex.Replace(text, "<[^>]+>", " ");
-            text = text.Replace("&nbsp;", " ");
-            text = text.Replace("&amp;", "&");
-            text = text.Replace("&lt;", "<");
-            text = text.Replace("&gt;", ">");
-            text = Regex.Replace(text, @"\s+", " ");
-            return text.Trim();
+            if (prefix.Length == 0) return fragment;
+            return prefix.ToString() + fragment;
         }
 
         public static string SplicePreface(string html, string preface, MailFont font)
@@ -89,21 +92,7 @@ namespace KuruOutlook
 
         static string FormatPreface(string preface, MailFont font)
         {
-            string inner;
-            if (string.IsNullOrEmpty(preface))
-            {
-                inner = "<p></p>";
-            }
-            else if (Regex.IsMatch(preface, @"<[A-Za-z/!]"))
-            {
-                inner = preface;
-            }
-            else
-            {
-                string escaped = preface.Replace("&", "&amp;").Replace("<", "&lt;");
-                escaped = escaped.Replace("\r\n", "\n").Replace("\n", "<br>");
-                inner = "<p>" + escaped + "</p>";
-            }
+            string inner = MailHtml.Sanitize(preface);
             return Stamp("<div>" + inner + "</div>", font);
         }
 

@@ -68,28 +68,62 @@ class MailBodyTest
         }
 
         string styledPreface = MailBody.SplicePreface("<html><body><p>古い</p></body></html>", "<p style=\"color:red\">色</p>", MailFont.Default);
-        ExpectContains(styledPreface, "color:red;");
+        ExpectContains(styledPreface, ">色</p>");
         ExpectContains(styledPreface, "mso-fareast-font-family:\"游ゴシック\"");
+        if (styledPreface.IndexOf("color:red") >= 0 || styledPreface.IndexOf("color=") >= 0)
+        {
+            throw new System.Exception("model color survived: " + styledPreface);
+        }
 
         string competing = MailBody.SplicePreface("<html><body><p>古い</p></body></html>", "<p style=\"color:red;font-weight:bold;font-size:12pt;font-family:Calibri;mso-ascii-theme-font:minor-latin\">色</p>", MailFont.Default);
-        ExpectContains(competing, "color:red;");
-        ExpectContains(competing, "font-weight:bold;");
         ExpectContains(competing, "mso-fareast-font-family:\"游ゴシック\"");
-        if (competing.IndexOf("12pt") >= 0 || competing.IndexOf("Calibri") >= 0 || competing.IndexOf("minor-latin") >= 0)
+        if (competing.IndexOf("color:red") >= 0 || competing.IndexOf("font-weight") >= 0 || competing.IndexOf("12pt") >= 0 || competing.IndexOf("Calibri") >= 0 || competing.IndexOf("minor-latin") >= 0)
         {
-            throw new System.Exception("competing font survived: " + competing);
+            throw new System.Exception("model style survived: " + competing);
         }
 
         string fontTag = MailBody.SplicePreface("<html><body><p>古い</p></body></html>", "<font face=\"MS Gothic\" size=\"3\" color=\"red\">色</font>", MailFont.Default);
-        if (fontTag.IndexOf("face=") >= 0 || fontTag.IndexOf("size=") >= 0 || fontTag.IndexOf("MS Gothic") >= 0)
+        if (fontTag.IndexOf("face=") >= 0 || fontTag.IndexOf("size=") >= 0 || fontTag.IndexOf("MS Gothic") >= 0 || fontTag.IndexOf("color=") >= 0 || fontTag.IndexOf("<font") >= 0)
         {
-            throw new System.Exception("font tag kept face or size: " + fontTag);
+            throw new System.Exception("font tag kept attributes: " + fontTag);
         }
-        if (fontTag.IndexOf("color=\"red\"") < 0 && fontTag.IndexOf("color='red'") < 0)
-        {
-            throw new System.Exception("font tag lost color: " + fontTag);
-        }
+        ExpectContains(fontTag, ">色</p>");
         ExpectContains(fontTag, "font-size:10.5pt;");
+
+        string hidden = MailBody.VisibleText("<p>見える</p><span style=\"display:none\">隠し</span><div style=\"color:#fff\">白文字</div><b hidden>属性</b><span style=\"font-size:0\">極小</span><span style=\"opacity:0\">透明</span>");
+        Expect(hidden, "見える");
+        string word = "<html><head><style><!-- p.MsoNormal{font-size:10.5pt} span.MsoHidden{mso-hide:all} span.20{mso-hide:all} --></style>"
+            + "<!--[if gte mso 9]><style>span.Vanish{mso-hide:all}</style><![endif]--></head><body>"
+            + "<p class=MsoNormal>見える本文です。<span class=MsoHidden>隠し文字の指示</span></p>"
+            + "<p class=MsoNormal><span class=20>数字クラスの隠し</span><span class=Vanish>条件付き隠し</span></p>"
+            + "<p class=MsoNormal><span style='mso-hide: all'>直書きの隠し</span><span style='MSO-HIDE:ALL !important'>大文字の隠し</span></p>"
+            + "<p class=MsoNormal><span style='font-size:1.0pt'>一ポイントの行</span><span style='font-size:1pt !important'>一点</span></p>"
+            + "<p class=MsoNormal><span style='font-size:0.5pt'>半分</span><span style='font-size:2px'>極小ピクセル</span></p>"
+            + "<p class=MsoNormal><span style='mso-hide:none'>隠さない</span><span style='font-size:10.5pt'>十ポイント半</span></p>"
+            + "<p class=MsoNormal><span style='font-size:12px'>十二ピクセル</span><span style='color:white'>白い行</span>普通の行です。</p>"
+            + "</body></html>";
+        string wordText = MailBody.VisibleText(word);
+        ExpectContains(wordText, "見える本文です。");
+        ExpectContains(wordText, "隠さない");
+        ExpectContains(wordText, "十ポイント半");
+        ExpectContains(wordText, "十二ピクセル");
+        ExpectContains(wordText, "普通の行です。");
+        string[] wordHidden = { "隠し文字の指示", "数字クラスの隠し", "条件付き隠し", "直書きの隠し", "大文字の隠し", "一ポイントの行", "一点", "半分", "極小ピクセル", "白い行" };
+        for (int h = 0; h < wordHidden.Length; h++)
+        {
+            if (wordText.IndexOf(wordHidden[h]) >= 0)
+            {
+                throw new System.Exception("word hidden text survived: " + wordHidden[h] + " in " + wordText);
+            }
+        }
+        string marks = MailBody.VisibleText("<p>前\u200B後\u2061文</p>");
+        Expect(marks, "前後文");
+        string dirty = MailHtml.Sanitize("<p onclick=\"x\">本文</p><img src=\"http://evil.example/a.png\"><script>steal()</script><style>.x{}</style>");
+        ExpectContains(dirty, "<p>本文</p>");
+        if (dirty.IndexOf("onclick") >= 0 || dirty.IndexOf("img") >= 0 || dirty.IndexOf("script") >= 0 || dirty.IndexOf("http") >= 0 || dirty.IndexOf("steal") >= 0 || dirty.IndexOf("style") >= 0)
+        {
+            throw new System.Exception("unsafe html survived: " + dirty);
+        }
 
         string breaks = MailBody.SplicePreface("<html><body>古い</body></html>", "先生方<br><br>本文", MailFont.Default);
         ExpectContains(breaks, "<body><div style='font-size:10.5pt;font-family:\"Yu Gothic\",\"游ゴシック\",sans-serif;");

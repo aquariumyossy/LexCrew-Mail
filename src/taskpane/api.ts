@@ -16,6 +16,7 @@ import { normalizeMaxToolRounds, ToolCall, ToolDefinition } from "../shared/tool
 import { normalizeThinkingBudget, normalizeThinkingLevel, ThinkingLevel } from "../shared/thinking";
 import { MailFontId, normalizeMailFontId, normalizeMailFontSizePt } from "../shared/mailFont";
 import { Memory, PersonNote, WritingNote } from "../shared/memory";
+import { healthBuildReport } from "../shared/buildStamp";
 import { applyAdopt, ConnectionFields, ConnectionView, settingsForStorage } from "./connectionState";
 
 export type StoredChatMessage = {
@@ -39,7 +40,7 @@ export type Settings = {
   thinkingLevel: ThinkingLevel;
   thinkingBudget: number;
   contextLimit: number;
-  /** 0 means no cap. */
+  /** Finite tool-round cap. 0 in storage is the maximum, not unlimited. */
   maxToolRounds: number;
   excludedWeekdays: number[];
   slotDayStart: string;
@@ -57,6 +58,7 @@ export type Settings = {
   mailFontId: MailFontId;
   mailFontSizePt: number;
   uiFontSize: UiFontSize;
+  dismissedLanHttpUrl: string;
 };
 
 export type TextSetting =
@@ -93,6 +95,7 @@ export function loadSettings(): Settings {
     mailFontId: normalizeMailFontId(undefined),
     mailFontSizePt: normalizeMailFontSizePt(undefined),
     uiFontSize: normalizeUiFontSize(undefined),
+    dismissedLanHttpUrl: "",
   };
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
@@ -114,6 +117,7 @@ export function loadSettings(): Settings {
       mailFontId: normalizeMailFontId(parsed.mailFontId),
       mailFontSizePt: normalizeMailFontSizePt(parsed.mailFontSizePt),
       uiFontSize: normalizeUiFontSize(parsed.uiFontSize),
+      dismissedLanHttpUrl: typeof parsed.dismissedLanHttpUrl === "string" ? parsed.dismissedLanHttpUrl.trim() : "",
     };
   } catch {
     return empty;
@@ -203,6 +207,19 @@ export async function readGoogleCalendar(url: string, from: Date, to: Date): Pro
 
 let keepConnectionInStorage = true;
 
+function readPaneToken(): string {
+  if (typeof window === "undefined") return "";
+  const token = (window as unknown as { kuruToken?: unknown }).kuruToken;
+  return typeof token === "string" ? token : "";
+}
+
+function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const token = readPaneToken();
+  if (token && !headers.has("X-LexCrew-Token")) headers.set("X-LexCrew-Token", token);
+  return fetch(path, { ...init, headers });
+}
+
 export function setKeepConnectionInStorage(keep: boolean): void {
   keepConnectionInStorage = keep;
 }
@@ -220,7 +237,7 @@ export function connectionFields(settings: Settings): ConnectionFields {
 }
 
 export async function fetchConnection(): Promise<ConnectionView> {
-  const res = await fetch("/api/connection");
+  const res = await apiFetch("/api/connection");
   const payload = (await res.json()) as ConnectionView & { error?: string };
   if (!res.ok) throw new Error(payload.error || `通信に失敗しました。${res.status}`);
   return payload;
@@ -230,14 +247,15 @@ export async function adoptStoredConnection(fields: ConnectionFields): Promise<C
   return postJson<ConnectionView>("/api/connection", fields);
 }
 
-export async function saveStoredConnection(fields: ConnectionFields): Promise<void> {
-  const res = await fetch("/api/connection", {
+export async function saveStoredConnection(fields: ConnectionFields): Promise<ConnectionView> {
+  const res = await apiFetch("/api/connection", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(fields),
   });
-  const payload = (await res.json()) as { error?: string };
+  const payload = (await res.json()) as ConnectionView & { error?: string };
   if (!res.ok) throw new Error(payload.error || `通信に失敗しました。${res.status}`);
+  return payload;
 }
 
 export function takeAdoptedSettings(settings: Settings, result: ConnectionView): Settings {
@@ -247,7 +265,7 @@ export function takeAdoptedSettings(settings: Settings, result: ConnectionView):
 }
 
 export async function fetchMemory(): Promise<Memory> {
-  const res = await fetch("/api/memory");
+  const res = await apiFetch("/api/memory");
   const payload = (await res.json()) as Partial<Memory> & { error?: string };
   if (!res.ok) throw new Error(payload.error || `通信に失敗しました。${res.status}`);
   return {
@@ -270,7 +288,7 @@ export async function removePerson(address: string): Promise<void> {
 }
 
 async function sendJson<T>(method: "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await apiFetch(path, {
     method,
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -281,7 +299,7 @@ async function sendJson<T>(method: "PUT" | "DELETE", path: string, body?: unknow
 }
 
 async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(path, {
+  const res = await apiFetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -295,7 +313,7 @@ async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): P
 }
 
 export async function readImage(settings: Settings, image: string, signal?: AbortSignal): Promise<string> {
-  const res = await fetch("/api/ocr", {
+  const res = await apiFetch("/api/ocr", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -320,7 +338,7 @@ export async function chat(
   tools: ToolDefinition[],
   options: { signal?: AbortSignal; onDelta?: (snapshot: { content: string; reasoningContent: string }) => void } = {}
 ): Promise<{ content: string; reasoningContent: string; toolCalls: ToolCall[] }> {
-  const res = await fetch("/api/chat", {
+  const res = await apiFetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify({
@@ -386,8 +404,18 @@ export type HealthReport = {
   argos?: { ok: boolean; error?: string };
 };
 
+export async function fetchSidecarBuild(): Promise<{ reachable: boolean; build: string | null }> {
+  try {
+    const res = await apiFetch("/api/health");
+    const body = res.status === 401 ? null : await res.json().catch(() => null);
+    return healthBuildReport(res.status, body);
+  } catch {
+    return { reachable: false, build: null };
+  }
+}
+
 export async function checkHealth(settings: Settings): Promise<HealthReport> {
-  const res = await fetch("/api/health", {
+  const res = await apiFetch("/api/health", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -412,7 +440,7 @@ export type ScopeRow = { path: string; label: string; isRoot?: boolean };
 
 export async function listConversations(conversationKey = ""): Promise<Array<{ id: string; title: string; updatedAt: number; conversationKey: string }>> {
   const query = conversationKey ? `?conversationKey=${encodeURIComponent(conversationKey)}` : "";
-  const res = await fetch(`/api/conversations${query}`);
+  const res = await apiFetch(`/api/conversations${query}`);
   const payload = (await res.json()) as {
     error?: string;
     conversations?: Array<{ id: string; title: string; updatedAt: number; conversationKey?: string }>;
@@ -424,7 +452,7 @@ export async function listConversations(conversationKey = ""): Promise<Array<{ i
 }
 
 export async function deleteConversation(id: string): Promise<void> {
-  const res = await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+  const res = await apiFetch(`/api/conversations/${id}`, { method: "DELETE" });
   if (!res.ok) {
     const payload = (await res.json()) as { error?: string };
     throw new Error(payload.error || "会話を削除できません。");
@@ -436,7 +464,7 @@ export function ensureConversation(conversationKey: string, fresh = false) {
 }
 
 export async function loadConversation(conversationId: string): Promise<{ messages: StoredChatMessage[]; files: CommittedFile[] }> {
-  const res = await fetch(`/api/conversations/${conversationId}`);
+  const res = await apiFetch(`/api/conversations/${conversationId}`);
   const payload = (await res.json()) as {
     error?: string;
     files?: CommittedFile[];
@@ -463,7 +491,7 @@ export async function loadMessages(conversationId: string): Promise<StoredChatMe
 }
 
 export async function saveConversationFiles(conversationId: string, files: CommittedFile[]): Promise<CommittedFile[]> {
-  const res = await fetch(`/api/conversations/${conversationId}/files`, {
+  const res = await apiFetch(`/api/conversations/${conversationId}/files`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ files }),

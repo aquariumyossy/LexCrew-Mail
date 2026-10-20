@@ -1,4 +1,6 @@
 import { HostMode, MailDraft, asStringList, emptyDraft } from "../shared/draft";
+import { historyKey } from "./conversationState";
+import { parseConversation, sealDraftWrite, ThreadMessage } from "../shared/draftGate";
 import { Party, normalizeAddress } from "../shared/memory";
 import { Appointment, formatLocal } from "../shared/freeSlots";
 import { MailFontStamp } from "../shared/mailFont";
@@ -8,6 +10,7 @@ type KuruHost = {
   readItem(): string;
   readParties(): string;
   readHeader(): string;
+  readConversation(): string;
   writeDraft(json: string): string;
   readCalendar(json: string): string;
   listMailFiles(): string;
@@ -34,24 +37,45 @@ export function currentHostMode(): HostMode {
   return parsed.mode ?? "none";
 }
 
+export const HOST_ITEM_UNKNOWN = "このウィンドウのメールを特定できません。";
+
+export function readHostContext(): { conversationId: string; itemId: string; error: string; mode: string } {
+  const parsed = JSON.parse(bridge().getContext()) as {
+    conversationId?: unknown;
+    itemId?: unknown;
+    error?: unknown;
+    mode?: unknown;
+  };
+  return {
+    conversationId: typeof parsed.conversationId === "string" ? parsed.conversationId : "",
+    itemId: typeof parsed.itemId === "string" ? parsed.itemId : "",
+    error: typeof parsed.error === "string" ? parsed.error : "",
+    mode: typeof parsed.mode === "string" ? parsed.mode : "",
+  };
+}
+
+function readContext(): { conversationId: string; itemId: string; error: string; mode: string } {
+  return readHostContext();
+}
+
 export function openThreadKey(): string {
   if (!outlookReady()) return "";
-  const parsed = JSON.parse(bridge().getContext()) as { conversationId?: string };
-  return typeof parsed.conversationId === "string" ? parsed.conversationId : "";
+  return readContext().conversationId;
+}
+
+export function openItemId(): string {
+  if (!outlookReady()) return "";
+  return readContext().itemId;
 }
 
 export function conversationKey(): string {
-  const parsed = JSON.parse(bridge().getContext()) as { conversationId?: string };
-  if (parsed.conversationId) {
-    return parsed.conversationId;
-  }
+  const context = readContext();
   const stored = sessionStorage.getItem("kuru.tempKey");
-  if (stored) {
-    return stored;
+  const temp = stored || `temp_${Date.now().toString(36)}`;
+  if (!stored && !context.conversationId && !context.itemId) {
+    sessionStorage.setItem("kuru.tempKey", temp);
   }
-  const key = `temp_${Date.now().toString(36)}`;
-  sessionStorage.setItem("kuru.tempKey", key);
-  return key;
+  return historyKey(context.conversationId, context.itemId, temp);
 }
 
 export type OpenItem = MailDraft & { from: string };
@@ -61,6 +85,7 @@ export type MailHeader = {
   from: string;
   to: string[];
   cc: string[];
+  bcc: string[];
 };
 
 export function readMailHeader(): MailHeader | null {
@@ -72,6 +97,7 @@ export function readMailHeader(): MailHeader | null {
       from?: unknown;
       to?: unknown;
       cc?: unknown;
+      bcc?: unknown;
     };
     if (parsed.ok !== true) return null;
     return {
@@ -79,9 +105,21 @@ export function readMailHeader(): MailHeader | null {
       from: typeof parsed.from === "string" ? parsed.from : "",
       to: asStringList(parsed.to),
       cc: asStringList(parsed.cc),
+      bcc: asStringList(parsed.bcc),
     };
   } catch {
     return null;
+  }
+}
+
+export function readConversation(): { messages: ThreadMessage[]; source: string } {
+  if (!outlookReady()) return { messages: [], source: "" };
+  try {
+    const parsed = JSON.parse(bridge().readConversation()) as { source?: unknown };
+    const source = typeof parsed.source === "string" ? parsed.source.slice(0, 400_000) : "";
+    return { messages: parseConversation(parsed), source };
+  } catch {
+    return { messages: [], source: "" };
   }
 }
 
@@ -95,7 +133,7 @@ export function readParties(): Party[] {
       if (!row || typeof row !== "object") continue;
       const record = row as { role?: unknown; name?: unknown; address?: unknown };
       const role = record.role;
-      if (role !== "from" && role !== "to" && role !== "cc") continue;
+      if (role !== "from" && role !== "to" && role !== "cc" && role !== "bcc") continue;
       const address = normalizeAddress(typeof record.address === "string" ? record.address : "");
       if (!address) continue;
       parties.push({ role, name: typeof record.name === "string" ? record.name : "", address });
@@ -199,8 +237,10 @@ export async function searchSentMail(query: string, address: string): Promise<{ 
   };
 }
 
-export async function writeDraft(draft: MailDraft, font: MailFontStamp): Promise<string> {
-  const result = bridge().writeDraft(JSON.stringify({ ...draft, mailFont: font }));
+export async function writeDraft(draft: MailDraft, font: MailFontStamp, options?: { headerApproved?: boolean }): Promise<string> {
+  const result = bridge().writeDraft(
+    JSON.stringify({ ...sealDraftWrite(draft, options?.headerApproved === true), mailFont: font })
+  );
   if (result.startsWith("エラー:")) {
     throw new Error(result.slice("エラー:".length).trim());
   }

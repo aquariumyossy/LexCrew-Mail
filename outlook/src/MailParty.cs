@@ -61,6 +61,11 @@ namespace KuruOutlook
             return text.IndexOf("/o=", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        public static string Smtp(string value)
+        {
+            return ExtractSmtp(value);
+        }
+
         public static string PartyLabel(string name, string smtp)
         {
             string person = PersonName(name);

@@ -1,27 +1,235 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 namespace KuruOutlook
 {
+    public enum WindowClass
+    {
+        Unknown = 0,
+        Explorer = 34,
+        Inspector = 35
+    }
+
+    public enum ItemSource
+    {
+        None,
+        Current,
+        Inline,
+        Selection
+    }
+
+    public sealed class HostItem
+    {
+        public string EntryId;
+        public string ConversationId;
+    }
+
+    public sealed class HostWindow
+    {
+        public WindowClass Kind;
+        public bool Alive;
+        public HostItem Current;
+        public HostItem Inline;
+        public HostItem Selection;
+    }
+
+    public sealed class ResolvedHost
+    {
+        public bool Ok;
+        public string Error;
+        public string EntryId;
+        public string ConversationId;
+        public ItemSource Source;
+    }
+
+    /// <summary>
+    /// Which inspector is open. Close forgets the item so a later pop-out cannot read it.
+    /// </summary>
+    public sealed class PaneHosts
+    {
+        readonly Dictionary<string, HostWindow> _open = new Dictionary<string, HostWindow>();
+
+        public void Open(string id, HostWindow window)
+        {
+            _open[id] = window;
+        }
+
+        public void Close(string id)
+        {
+            HostWindow window;
+            if (!_open.TryGetValue(id, out window) || window == null)
+            {
+                return;
+            }
+            window.Alive = false;
+            window.Current = null;
+            window.Inline = null;
+            window.Selection = null;
+        }
+
+        public void Activate(string id)
+        {
+            // Close is final. A later Activate on that inspector must not restore its item.
+        }
+
+        public ResolvedHost Context(string id)
+        {
+            HostWindow window;
+            if (!_open.TryGetValue(id, out window))
+            {
+                return MailTarget.Resolve(null);
+            }
+            return MailTarget.Resolve(window);
+        }
+    }
+
     public static class MailTarget
     {
-        public static string ConversationId(string itemId, string selectedId)
+        public const string UnknownItemError = "このウィンドウのメールを特定できません。";
+
+        public static string ConversationId(string itemConversationId, string itemEntryId)
         {
-            if (!string.IsNullOrEmpty(itemId))
+            if (!string.IsNullOrEmpty(itemConversationId))
             {
-                return itemId;
+                return itemConversationId;
             }
-            return selectedId ?? "";
+            if (string.IsNullOrEmpty(itemEntryId))
+            {
+                return "";
+            }
+            return "item:" + itemEntryId;
+        }
+
+        /// <summary>
+        /// Inspector pop-outs use only CurrentItem. Explorer selection is never a substitute.
+        /// </summary>
+        /// <summary>
+        /// A pane still showing another live inspector must stay on that window.
+        /// A closed pane, a dead host, or the same window may be claimed.
+        /// </summary>
+        public static bool MayRetarget(bool closed, bool hostAlive, bool sameWindow)
+        {
+            if (sameWindow)
+            {
+                return true;
+            }
+            if (closed || !hostAlive)
+            {
+                return true;
+            }
+            return false;
+        }
+
+        public static ItemSource Choose(WindowClass kind, bool alive, bool hasCurrent, bool hasInline, bool hasSelection)
+        {
+            if (!alive || kind == WindowClass.Unknown)
+            {
+                return ItemSource.None;
+            }
+            if (kind == WindowClass.Inspector)
+            {
+                return hasCurrent ? ItemSource.Current : ItemSource.None;
+            }
+            if (kind != WindowClass.Explorer)
+            {
+                return ItemSource.None;
+            }
+            if (hasInline)
+            {
+                return ItemSource.Inline;
+            }
+            if (hasSelection)
+            {
+                return ItemSource.Selection;
+            }
+            return ItemSource.None;
+        }
+
+        public static ResolvedHost Resolve(HostWindow window)
+        {
+            if (window == null)
+            {
+                return Refuse();
+            }
+            ItemSource source = Choose(
+                window.Kind,
+                window.Alive,
+                window.Current != null,
+                window.Inline != null,
+                window.Selection != null);
+            HostItem item = ItemFor(window, source);
+            if (item == null)
+            {
+                return Refuse();
+            }
+            return new ResolvedHost
+            {
+                Ok = true,
+                Error = "",
+                EntryId = item.EntryId ?? "",
+                ConversationId = ConversationId(item.ConversationId, item.EntryId),
+                Source = source
+            };
+        }
+
+        public static string Missing(object window)
+        {
+            WindowClass kind = Classify(window);
+            if (window == null || kind == WindowClass.Unknown || kind == WindowClass.Inspector)
+            {
+                return UnknownItemError;
+            }
+            return "メールが選択されていません。";
+        }
+
+        public static WindowClass Classify(object window)
+        {
+            if (window == null)
+            {
+                return WindowClass.Unknown;
+            }
+            object raw = Try(delegate { return ((dynamic)window).Class; });
+            if (raw == null)
+            {
+                return WindowClass.Unknown;
+            }
+            try
+            {
+                int cls = Convert.ToInt32(raw);
+                if (cls == (int)WindowClass.Explorer)
+                {
+                    return WindowClass.Explorer;
+                }
+                if (cls == (int)WindowClass.Inspector)
+                {
+                    return WindowClass.Inspector;
+                }
+            }
+            catch (InvalidCastException)
+            {
+            }
+            catch (FormatException)
+            {
+            }
+            catch (OverflowException)
+            {
+            }
+            return WindowClass.Unknown;
         }
 
         public static dynamic Draft(object window, out bool inspector)
         {
             inspector = false;
-            dynamic current = Current(window);
-            if (current != null)
+            WindowClass kind = Classify(window);
+            if (kind == WindowClass.Inspector)
             {
                 inspector = true;
-                return current;
+                return Current(window);
+            }
+            if (kind != WindowClass.Explorer)
+            {
+                return null;
             }
             dynamic inline = Inline(window);
             if (inline != null)
@@ -40,27 +248,54 @@ namespace KuruOutlook
 
         public static dynamic Selected(object window, out bool inspector)
         {
-            inspector = false;
-            dynamic current = Current(window);
-            if (current != null)
-            {
-                inspector = true;
-                return current;
-            }
-            return Selection(window);
+            return Draft(window, out inspector);
         }
 
         public static dynamic Editor(object window)
         {
-            if (Current(window) != null)
+            WindowClass kind = Classify(window);
+            if (kind == WindowClass.Inspector)
             {
-                return Try(delegate { return ((dynamic)window).WordEditor; });
+                if (Current(window) != null)
+                {
+                    return Try(delegate { return ((dynamic)window).WordEditor; });
+                }
+                return null;
             }
-            if (Inline(window) != null)
+            if (kind == WindowClass.Explorer && Inline(window) != null)
             {
                 return Try(delegate { return ((dynamic)window).ActiveInlineResponseWordEditor; });
             }
             return null;
+        }
+
+        static HostItem ItemFor(HostWindow window, ItemSource source)
+        {
+            if (source == ItemSource.Current)
+            {
+                return window.Current;
+            }
+            if (source == ItemSource.Inline)
+            {
+                return window.Inline;
+            }
+            if (source == ItemSource.Selection)
+            {
+                return window.Selection;
+            }
+            return null;
+        }
+
+        static ResolvedHost Refuse()
+        {
+            return new ResolvedHost
+            {
+                Ok = false,
+                Error = UnknownItemError,
+                EntryId = "",
+                ConversationId = "",
+                Source = ItemSource.None
+            };
         }
 
         static dynamic Current(object window)

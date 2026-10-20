@@ -33,7 +33,8 @@ namespace KuruOutlook
         {
             _mutex = mutex;
             MigrateAutostart();
-            _status = new ToolStripMenuItem("LexCrew Mail 起動中") { Enabled = false };
+            string stamp = BuildLabel();
+            _status = new ToolStripMenuItem(string.IsNullOrEmpty(stamp) ? "LexCrew Mail 起動中" : "LexCrew Mail " + stamp) { Enabled = false };
             _autostart = new ToolStripMenuItem("ログイン時に起動") { Checked = AutostartEnabled() };
             _autostart.Click += OnAutostartClick;
 
@@ -62,6 +63,22 @@ namespace KuruOutlook
             };
 
             Sidecar.StartFromTray();
+        }
+
+        static string BuildLabel()
+        {
+            try
+            {
+                string path = Path.Combine(Sidecar.InstallRootFrom(null), "build.txt");
+                if (!File.Exists(path)) return "";
+                string text = File.ReadAllText(path).Trim();
+                if (text.Length > 80) text = text.Substring(0, 80);
+                return text;
+            }
+            catch
+            {
+                return "";
+            }
         }
 
         static Icon LoadIcon()

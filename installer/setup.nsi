@@ -21,6 +21,16 @@
 !ifndef BITNESS
   !define BITNESS "x64"
 !endif
+!ifndef DISPLAYVERSION
+  !define DISPLAYVERSION "${VERSION}"
+!endif
+
+; VIProductVersion stays numeric. The stamp shown to people is DISPLAYVERSION.
+VIProductVersion "${VERSION}.0"
+VIAddVersionKey /LANG=0 "ProductName" "LexCrew Mail"
+VIAddVersionKey /LANG=0 "FileVersion" "${VERSION}.0"
+VIAddVersionKey /LANG=0 "ProductVersion" "${DISPLAYVERSION}"
+VIAddVersionKey /LANG=0 "FileDescription" "LexCrew Mail"
 
 Name "LexCrew Mail"
 Caption "LexCrew Mail セットアップ"
@@ -35,7 +45,7 @@ SetCompressor /SOLID lzma
 !define MUI_ABORTWARNING
 
 !define MUI_WELCOMEPAGE_TITLE "LexCrew Mail のインストール"
-!define MUI_WELCOMEPAGE_TEXT "LexCrew Mail を現在のユーザーにインストールします。管理者権限は不要です。$\r$\n$\r$\nOutlook が起動している場合は、先に終了してください。"
+!define MUI_WELCOMEPAGE_TEXT "LexCrew Mail ${DISPLAYVERSION} を現在のユーザーにインストールします。管理者権限は不要です。$\r$\n$\r$\nOutlook が起動している場合は、先に終了してください。"
 !insertmacro MUI_PAGE_WELCOME
 
 !define MUI_STARTMENUPAGE_REGISTRY_ROOT "HKCU"
@@ -138,7 +148,7 @@ Section "Install"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KURU" "DisplayName" "LexCrew Mail"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KURU" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KURU" "DisplayVersion" "${DISPLAYVERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KURU" "Publisher" "LexCrew"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KURU" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\KURU" "UninstallString" '"$INSTDIR\uninstall.exe"'

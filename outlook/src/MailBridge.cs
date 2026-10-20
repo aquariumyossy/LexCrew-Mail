@@ -9,13 +9,34 @@ namespace KuruOutlook
     public class MailBridge
     {
         const string SmtpTag = "http://schemas.microsoft.com/mapi/proptag/0x39FE001F";
-        readonly object _window;
+        readonly Func<object> _windowOf;
         string _fileStamp;
         string _fileList;
 
-        public MailBridge(object window)
+        public MailBridge(object window) : this(delegate { return window; })
         {
-            _window = window;
+        }
+
+        public MailBridge(Func<object> windowOf)
+        {
+            _windowOf = windowOf ?? (delegate { return null; });
+        }
+
+        object Window()
+        {
+            try
+            {
+                return _windowOf();
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        string NoItem(object window)
+        {
+            return MailTarget.Missing(window);
         }
 
         public string GetContext()
@@ -23,27 +44,29 @@ namespace KuruOutlook
             var clock = System.Diagnostics.Stopwatch.StartNew();
             try
             {
+                object window = Window();
                 bool inspector;
-                dynamic item = MailTarget.Draft(_window, out inspector);
+                dynamic item = MailTarget.Draft(window, out inspector);
                 if (item == null)
                 {
-                    return "{\"mode\":\"none\",\"conversationId\":\"\"}";
+                    return "{\"mode\":\"none\",\"conversationId\":\"\",\"itemId\":\"\",\"error\":\"" + Json(NoItem(window)) + "\"}";
                 }
                 string messageClass = Convert.ToString(item.MessageClass);
                 bool sent = SafeSent(item);
                 string mode = MailGate.Mode(inspector, messageClass, sent);
+                string itemId = SafeString(() => Convert.ToString(item.EntryID));
                 string conversationId = "";
                 if (mode != "not-message")
                 {
                     conversationId = MailTarget.ConversationId(
                         SafeString(() => item.ConversationID),
-                        SafeString(delegate { return SelectedConversationId(); }));
+                        itemId);
                 }
-                return "{\"mode\":\"" + Json(mode) + "\",\"conversationId\":\"" + Json(conversationId) + "\"}";
+                return "{\"mode\":\"" + Json(mode) + "\",\"conversationId\":\"" + Json(conversationId) + "\",\"itemId\":\"" + Json(itemId) + "\"}";
             }
             catch (Exception ex)
             {
-                return "{\"mode\":\"none\",\"conversationId\":\"\",\"error\":\"" + Json(ex.Message) + "\"}";
+                return "{\"mode\":\"none\",\"conversationId\":\"\",\"itemId\":\"\",\"error\":\"" + Json(ex.Message) + "\"}";
             }
             finally
             {
@@ -55,11 +78,12 @@ namespace KuruOutlook
         {
             try
             {
+                object window = Window();
                 bool inspector;
-                dynamic item = MailTarget.Draft(_window, out inspector);
+                dynamic item = MailTarget.Draft(window, out inspector);
                 if (item == null)
                 {
-                    return "{\"error\":\"メールが選択されていません。\"}";
+                    return "{\"error\":\"" + Json(NoItem(window)) + "\"}";
                 }
                 string messageClass = Convert.ToString(item.MessageClass);
                 string mode = MailGate.Mode(inspector, messageClass, SafeSent(item));
@@ -75,13 +99,15 @@ namespace KuruOutlook
                 string from;
                 string[] to;
                 string[] cc;
-                FillHeaderLists(item, out from, out to, out cc);
+                string[] bcc;
+                FillHeaderLists(item, out from, out to, out cc, out bcc);
                 var payload = new System.Collections.Generic.Dictionary<string, object>
                 {
                     { "subject", SafeString(() => item.Subject) },
                     { "from", from },
                     { "to", to },
                     { "cc", cc },
+                    { "bcc", bcc },
                     { "bodyHtml", MailBody.VisibleText(html) },
                     { "citations", new object[0] }
                 };
@@ -98,7 +124,7 @@ namespace KuruOutlook
             try
             {
                 bool inspector;
-                dynamic item = MailTarget.Draft(_window, out inspector);
+                dynamic item = MailTarget.Draft(Window(), out inspector);
                 if (item == null)
                 {
                     return "{\"ok\":false}";
@@ -112,14 +138,16 @@ namespace KuruOutlook
                 string from;
                 string[] to;
                 string[] cc;
-                FillHeaderLists(item, out from, out to, out cc);
+                string[] bcc;
+                FillHeaderLists(item, out from, out to, out cc, out bcc);
                 var payload = new System.Collections.Generic.Dictionary<string, object>
                 {
                     { "ok", true },
                     { "subject", SafeString(() => item.Subject) },
                     { "from", from },
                     { "to", to },
-                    { "cc", cc }
+                    { "cc", cc },
+                    { "bcc", bcc }
                 };
                 return new JavaScriptSerializer().Serialize(payload);
             }
@@ -129,12 +157,39 @@ namespace KuruOutlook
             }
         }
 
+        public string ReadConversation()
+        {
+            try
+            {
+                object window = Window();
+                bool inspector;
+                dynamic item = MailTarget.Draft(window, out inspector);
+                if (item == null)
+                {
+                    return "{\"messages\":[],\"error\":\"" + Json(NoItem(window)) + "\"}";
+                }
+                var messages = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
+                CollectConversation(item, messages, MailTarget.Classify(window) == WindowClass.Explorer ? window : null);
+                string source = QuotedHeaders.Clip(
+                    SafeString(() => Convert.ToString(item.HTMLBody)) + "\n" + SafeString(() => Convert.ToString(item.Body)));
+                return new JavaScriptSerializer().Serialize(new System.Collections.Generic.Dictionary<string, object>
+                {
+                    { "messages", messages },
+                    { "source", source }
+                });
+            }
+            catch
+            {
+                return "{\"messages\":[]}";
+            }
+        }
+
         public string ReadParties()
         {
             try
             {
                 bool inspector;
-                dynamic item = MailTarget.Draft(_window, out inspector);
+                dynamic item = MailTarget.Draft(Window(), out inspector);
                 if (item == null)
                 {
                     return "{\"parties\":[]}";
@@ -160,11 +215,12 @@ namespace KuruOutlook
             string how = "skip";
             try
             {
+                object window = Window();
                 bool inspector;
-                dynamic item = MailTarget.Selected(_window, out inspector);
+                dynamic item = MailTarget.Selected(window, out inspector);
                 if (item == null)
                 {
-                    return "{\"error\":\"メールが選択されていません。\"}";
+                    return "{\"error\":\"" + Json(NoItem(window)) + "\"}";
                 }
                 string mode = MailGate.Mode(inspector, Convert.ToString(item.MessageClass), SafeSent(item));
                 if (mode == "none" || mode == "not-message")
@@ -259,10 +315,11 @@ namespace KuruOutlook
             string temp = "";
             try
             {
-                dynamic item = MailTarget.Selected(_window);
+                object window = Window();
+                dynamic item = MailTarget.Selected(window);
                 if (item == null)
                 {
-                    return "{\"error\":\"メールが選択されていません。\"}";
+                    return "{\"error\":\"" + Json(NoItem(window)) + "\"}";
                 }
                 dynamic attachment = item.Attachments[index];
                 temp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kuru-" + Guid.NewGuid().ToString("n"));
@@ -298,11 +355,12 @@ namespace KuruOutlook
         {
             try
             {
+                object window = Window();
                 bool inspector;
-                dynamic item = MailTarget.Draft(_window, out inspector);
+                dynamic item = MailTarget.Draft(window, out inspector);
                 if (item == null)
                 {
-                    return "エラー: メールが選択されていません。";
+                    return "エラー: " + NoItem(window);
                 }
                 string mode = MailGate.Mode(inspector, Convert.ToString(item.MessageClass), SafeSent(item));
                 if (mode != "compose")
@@ -314,6 +372,22 @@ namespace KuruOutlook
                 var serializer = new JavaScriptSerializer();
                 var draft = serializer.Deserialize<System.Collections.Generic.Dictionary<string, object>>(json);
                 string preface = Convert.ToString(draft["bodyHtml"]);
+                string proposedSubject = draft.ContainsKey("subject") ? Convert.ToString(draft["subject"]) : null;
+                string refusal = DraftGuard.RefuseHeaderChange(
+                    HeaderApproved(draft),
+                    SafeString(() => Convert.ToString(item.Subject)),
+                    proposedSubject,
+                    RecipientsOfType(item, 1),
+                    DraftAddresses(draft, "to"),
+                    RecipientsOfType(item, 2),
+                    DraftAddresses(draft, "cc"),
+                    RecipientsOfType(item, 3),
+                    DraftAddresses(draft, "bcc"),
+                    ThreadParticipants(item));
+                if (refusal != null)
+                {
+                    return refusal;
+                }
                 MailFont font = MailFont.FromDraft(draft);
                 bool mutated;
                 string wordError;
@@ -325,13 +399,14 @@ namespace KuruOutlook
                     }
                     item.HTMLBody = MailBody.SplicePreface(SafeString(() => item.HTMLBody), preface, font);
                 }
-                string subject = draft.ContainsKey("subject") ? Convert.ToString(draft["subject"]) : "";
+                string subject = draft.ContainsKey("subject") ? MailHtml.StripMarks(Convert.ToString(draft["subject"])).Trim() : "";
                 if (!string.IsNullOrEmpty(subject))
                 {
                     item.Subject = subject;
                 }
                 SetAddressField(item, draft, "to", 1);
                 SetAddressField(item, draft, "cc", 2);
+                SetAddressField(item, draft, "bcc", 3);
                 return "作成ウィンドウへ書き戻しました。";
             }
             catch (Exception ex)
@@ -344,7 +419,7 @@ namespace KuruOutlook
         {
             mutated = false;
             error = null;
-            dynamic editor = MailTarget.Editor(_window);
+            dynamic editor = MailTarget.Editor(Window());
             if (editor == null)
             {
                 return false;
@@ -426,7 +501,7 @@ namespace KuruOutlook
 
         public string SearchSent(string json)
         {
-            return SentLookup.Search(_window, json);
+            return SentLookup.Search(Window(), json);
         }
 
         public string ReadCalendar(string json)
@@ -441,7 +516,7 @@ namespace KuruOutlook
                 {
                     return "{\"error\":\"予定の期間が不正です。\"}";
                 }
-                dynamic app = ((dynamic)_window).Application;
+                dynamic app = ((dynamic)Window()).Application;
                 var folders = new System.Collections.Generic.List<object>();
                 CollectCalendars(app, folders);
                 if (folders.Count == 0)
@@ -742,16 +817,6 @@ namespace KuruOutlook
                 && to > from;
         }
 
-        string SelectedConversationId()
-        {
-            dynamic selected = MailTarget.Selected(_window);
-            if (selected == null)
-            {
-                return "";
-            }
-            return Convert.ToString(selected.ConversationID) ?? "";
-        }
-
         static bool SafeSent(dynamic item)
         {
             try
@@ -800,7 +865,27 @@ namespace KuruOutlook
             {
                 return smtp;
             }
-            return AcceptSmtp(SafeString(() => Convert.ToString(item.SenderEmailAddress)));
+            smtp = AcceptSmtp(SafeString(() => Convert.ToString(item.SenderEmailAddress)));
+            if (smtp.Length > 0)
+            {
+                return smtp;
+            }
+            smtp = NameSmtp(SafeString(() => Convert.ToString(item.SenderName)));
+            if (smtp.Length > 0)
+            {
+                return smtp;
+            }
+            smtp = NameSmtp(MapiString(item, "http://schemas.microsoft.com/mapi/proptag/0x0C1A001F"));
+            if (smtp.Length > 0)
+            {
+                return smtp;
+            }
+            return NameSmtp(SafeString(() => item.Sender.Name));
+        }
+
+        static string NameSmtp(string value)
+        {
+            return AcceptSmtp(MailParty.Smtp(value));
         }
 
         static string RecipientSmtp(dynamic recipient)
@@ -813,6 +898,11 @@ namespace KuruOutlook
             catch
             {
             }
+            if (smtp.Length > 0)
+            {
+                return smtp;
+            }
+            smtp = NameSmtp(SafeString(() => Convert.ToString(recipient.Name)));
             if (smtp.Length > 0)
             {
                 return smtp;
@@ -880,6 +970,7 @@ namespace KuruOutlook
         {
             var to = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
             var cc = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
+            var bcc = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
             try
             {
                 dynamic recipients = item.Recipients;
@@ -897,16 +988,19 @@ namespace KuruOutlook
                         catch
                         {
                         }
-                        if (kind == 3)
-                        {
-                            continue;
-                        }
                         string address = RecipientSmtp(recipient);
                         string name = MailParty.PersonName(
                             SafeString(() => Convert.ToString(recipient.Name)),
                             SafeString(() => Convert.ToString(recipient.Address))
                         );
-                        AddParty(kind == 2 ? cc : to, kind == 2 ? "cc" : "to", name, address, self);
+                        if (kind == 3)
+                        {
+                            AddParty(bcc, "bcc", name, address, self);
+                        }
+                        else
+                        {
+                            AddParty(kind == 2 ? cc : to, kind == 2 ? "cc" : "to", name, address, self);
+                        }
                     }
                     catch
                     {
@@ -918,6 +1012,7 @@ namespace KuruOutlook
             }
             parties.AddRange(to);
             parties.AddRange(cc);
+            parties.AddRange(bcc);
         }
 
         static string SenderLabel(dynamic item)
@@ -932,20 +1027,23 @@ namespace KuruOutlook
             );
         }
 
-        static void FillHeaderLists(dynamic item, out string from, out string[] to, out string[] cc)
+        static void FillHeaderLists(dynamic item, out string from, out string[] to, out string[] cc, out string[] bcc)
         {
             from = MailParty.PartyLabel(SenderLabel(item), SenderSmtp(item));
             var toList = new System.Collections.Generic.List<string>();
             var ccList = new System.Collections.Generic.List<string>();
-            CollectHeaderParties(item, toList, ccList);
+            var bccList = new System.Collections.Generic.List<string>();
+            CollectHeaderParties(item, toList, ccList, bccList);
             to = MailParty.CapParties(toList);
             cc = MailParty.CapParties(ccList);
+            bcc = MailParty.CapParties(bccList);
         }
 
         static void CollectHeaderParties(
             dynamic item,
             System.Collections.Generic.List<string> to,
-            System.Collections.Generic.List<string> cc)
+            System.Collections.Generic.List<string> cc,
+            System.Collections.Generic.List<string> bcc)
         {
             try
             {
@@ -964,10 +1062,6 @@ namespace KuruOutlook
                         catch
                         {
                         }
-                        if (kind == 3)
-                        {
-                            continue;
-                        }
                         string rawName = SafeString(() => Convert.ToString(recipient.Name));
                         string rawAddress = SafeString(() => Convert.ToString(recipient.Address));
                         string smtp = RecipientSmtp(recipient);
@@ -976,7 +1070,7 @@ namespace KuruOutlook
                             smtp = rawAddress;
                         }
                         string label = MailParty.PartyLabel(rawName.Length > 0 ? rawName : rawAddress, smtp);
-                        AddUnique(kind == 2 ? cc : to, label);
+                        AddUnique(kind == 3 ? bcc : kind == 2 ? cc : to, label);
                     }
                     catch
                     {
@@ -993,6 +1087,14 @@ namespace KuruOutlook
             if (cc.Count == 0)
             {
                 AddDisplayFallback(cc, item, false);
+            }
+            if (bcc.Count == 0)
+            {
+                string[] labels = MailParty.LabelsFromDisplayList(SafeString(() => item.BCC));
+                for (int i = 0; i < labels.Length; i++)
+                {
+                    AddUnique(bcc, labels[i]);
+                }
             }
         }
 
@@ -1066,6 +1168,529 @@ namespace KuruOutlook
             }
         }
 
+        static bool HeaderApproved(System.Collections.Generic.Dictionary<string, object> draft)
+        {
+            object value;
+            if (!draft.TryGetValue("headerApproved", out value) || value == null)
+            {
+                return false;
+            }
+            if (value is bool)
+            {
+                return (bool)value;
+            }
+            return string.Equals(Convert.ToString(value), "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        static string[] DraftAddresses(System.Collections.Generic.Dictionary<string, object> draft, string key)
+        {
+            object value;
+            if (!draft.TryGetValue(key, out value) || value == null)
+            {
+                return null;
+            }
+            var list = value as System.Collections.IList;
+            if (list == null)
+            {
+                return null;
+            }
+            var parts = new string[list.Count];
+            for (int i = 0; i < list.Count; i++)
+            {
+                parts[i] = Convert.ToString(list[i]);
+            }
+            return parts;
+        }
+
+        const int ConversationLimit = 400;
+
+        static void CollectConversation(dynamic item, System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages, object explorerWindow)
+        {
+            var seen = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string openId = SafeString(() => Convert.ToString(item.EntryID));
+            if (openId.Length > 0)
+            {
+                seen.Add(openId);
+            }
+            try
+            {
+                messages.Add(MessageParties(item));
+            }
+            catch
+            {
+            }
+            try
+            {
+                AppendQuotedHeaders(item, messages);
+            }
+            catch
+            {
+            }
+            int beforeSiblings = messages.Count;
+            try
+            {
+                dynamic conversation = item.GetConversation();
+                if (conversation != null)
+                {
+                    try
+                    {
+                        WalkConversation(conversation, conversation.GetRootItems(), messages, seen, 0);
+                    }
+                    catch
+                    {
+                    }
+                    try
+                    {
+                        CollectConversationTable(item, conversation, messages, seen);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
+            if (explorerWindow != null && messages.Count == beforeSiblings)
+            {
+                try
+                {
+                    CollectSelectionSibling(item, explorerWindow, messages, seen);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        static void AppendQuotedHeaders(dynamic item, System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages)
+        {
+            var list = new System.Collections.Generic.List<string>();
+            string html = QuotedHeaders.Clip(SafeString(() => Convert.ToString(item.HTMLBody)));
+            string plain = QuotedHeaders.Clip(SafeString(() => Convert.ToString(item.Body)));
+            string[] fromHtml = QuotedHeaders.Addresses(html);
+            string[] fromPlain = QuotedHeaders.Addresses(plain);
+            for (int i = 0; i < fromHtml.Length; i++) AddParticipant(list, fromHtml[i]);
+            for (int i = 0; i < fromPlain.Length; i++) AddParticipant(list, fromPlain[i]);
+            if (list.Count == 0)
+            {
+                return;
+            }
+            messages.Add(new System.Collections.Generic.Dictionary<string, object>
+            {
+                { "from", "" },
+                { "sender", "" },
+                { "to", list.ToArray() },
+                { "cc", new string[0] },
+                { "replyTo", new string[0] }
+            });
+        }
+
+        static void CollectSelectionSibling(
+            dynamic item,
+            object explorerWindow,
+            System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages,
+            System.Collections.Generic.HashSet<string> seen)
+        {
+            string openId = SafeString(() => Convert.ToString(item.ConversationID));
+            if (openId.Length == 0)
+            {
+                return;
+            }
+            dynamic selection = null;
+            try
+            {
+                selection = ((dynamic)explorerWindow).Selection;
+            }
+            catch
+            {
+                return;
+            }
+            if (selection == null)
+            {
+                return;
+            }
+            int count = 0;
+            try
+            {
+                count = Convert.ToInt32(selection.Count);
+            }
+            catch
+            {
+                return;
+            }
+            int take = count < 20 ? count : 20;
+            for (int i = 1; i <= take && messages.Count < ConversationLimit; i++)
+            {
+                try
+                {
+                    dynamic selected = selection[i];
+                    if (selected == null)
+                    {
+                        continue;
+                    }
+                    string cid = SafeString(() => Convert.ToString(selected.ConversationID));
+                    if (!string.Equals(cid, openId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    string entryId = SafeString(() => Convert.ToString(selected.EntryID));
+                    if (entryId.Length > 0 && !seen.Add(entryId))
+                    {
+                        continue;
+                    }
+                    messages.Add(MessageParties(selected));
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        static void WalkConversation(
+            dynamic conversation,
+            dynamic roots,
+            System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages,
+            System.Collections.Generic.HashSet<string> seen,
+            int depth)
+        {
+            if (roots == null || depth > 40 || messages.Count >= ConversationLimit)
+            {
+                return;
+            }
+            int count = 0;
+            try
+            {
+                count = Convert.ToInt32(roots.Count);
+            }
+            catch
+            {
+                return;
+            }
+            for (int i = 1; i <= count && messages.Count < ConversationLimit; i++)
+            {
+                dynamic mail = null;
+                try
+                {
+                    try
+                    {
+                        mail = roots[i];
+                    }
+                    catch
+                    {
+                        mail = roots.Item(i);
+                    }
+                    if (mail == null)
+                    {
+                        continue;
+                    }
+                    string entryId = SafeString(() => Convert.ToString(mail.EntryID));
+                    bool fresh = entryId.Length == 0 || seen.Add(entryId);
+                    if (fresh)
+                    {
+                        messages.Add(MessageParties(mail));
+                    }
+                    dynamic children = null;
+                    try
+                    {
+                        children = conversation.GetChildren(mail);
+                    }
+                    catch
+                    {
+                    }
+                    WalkConversation(conversation, children, messages, seen, depth + 1);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        static void CollectConversationTable(
+            dynamic item,
+            dynamic conversation,
+            System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages,
+            System.Collections.Generic.HashSet<string> seen)
+        {
+            dynamic table = conversation.GetTable();
+            if (table == null)
+            {
+                return;
+            }
+            try
+            {
+                table.Columns.Add("EntryID");
+            }
+            catch
+            {
+            }
+            try
+            {
+                table.Columns.Add("StoreID");
+            }
+            catch
+            {
+            }
+            int guard = 0;
+            while (messages.Count < ConversationLimit && guard < ConversationLimit)
+            {
+                guard++;
+                bool end = true;
+                try
+                {
+                    end = (bool)table.EndOfTable;
+                }
+                catch
+                {
+                    return;
+                }
+                if (end)
+                {
+                    return;
+                }
+                try
+                {
+                    dynamic row = table.GetNextRow();
+                    if (row == null)
+                    {
+                        return;
+                    }
+                    string entryId = Convert.ToString(row["EntryID"]) ?? "";
+                    if (entryId.Length == 0 || !seen.Add(entryId))
+                    {
+                        continue;
+                    }
+                    string storeId = "";
+                    try
+                    {
+                        storeId = Convert.ToString(row["StoreID"]) ?? "";
+                    }
+                    catch
+                    {
+                    }
+                    dynamic mail = null;
+                    if (storeId.Length > 0)
+                    {
+                        try
+                        {
+                            mail = item.Session.GetItemFromID(entryId, storeId);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                    if (mail == null)
+                    {
+                        mail = item.Session.GetItemFromID(entryId);
+                    }
+                    if (mail == null)
+                    {
+                        continue;
+                    }
+                    messages.Add(MessageParties(mail));
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        static System.Collections.Generic.Dictionary<string, object> MessageParties(dynamic item)
+        {
+            string sender = SenderSmtp(item);
+            string from = RepresentingSmtp(item);
+            if (from.Length == 0)
+            {
+                from = sender;
+            }
+            return new System.Collections.Generic.Dictionary<string, object>
+            {
+                { "from", from },
+                { "sender", sender },
+                { "to", RecipientsOfType(item, 1) },
+                { "cc", RecipientsOfType(item, 2) },
+                { "replyTo", ReplyToAddresses(item) }
+            };
+        }
+
+        static string RepresentingSmtp(dynamic item)
+        {
+            try
+            {
+                string behalf = SmtpOfEntry(item.SentOnBehalfOf);
+                if (behalf.Length > 0)
+                {
+                    return behalf;
+                }
+            }
+            catch
+            {
+            }
+            string prop = AcceptSmtp(SafeString(() => Convert.ToString(item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x5D02001F"))));
+            if (prop.Length > 0)
+            {
+                return prop;
+            }
+            string named = NameSmtp(SafeString(() => Convert.ToString(item.SentOnBehalfOfName)));
+            if (named.Length > 0)
+            {
+                return named;
+            }
+            named = NameSmtp(MapiString(item, "http://schemas.microsoft.com/mapi/proptag/0x0065001F"));
+            if (named.Length > 0)
+            {
+                return named;
+            }
+            return NameSmtp(MapiString(item, "http://schemas.microsoft.com/mapi/proptag/0x0042001F"));
+        }
+
+        static string[] ReplyToAddresses(dynamic item)
+        {
+            var list = new System.Collections.Generic.List<string>();
+            try
+            {
+                dynamic recipients = item.ReplyRecipients;
+                int count = recipients == null ? 0 : Convert.ToInt32(recipients.Count);
+                for (int i = 1; i <= count; i++)
+                {
+                    try
+                    {
+                        AddParticipant(list, RecipientSmtp(recipients[i]));
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
+            if (list.Count == 0)
+            {
+                string[] labels = MailParty.LabelsFromDisplayList(SafeString(() => Convert.ToString(item.ReplyRecipientNames)));
+                for (int i = 0; i < labels.Length; i++)
+                {
+                    AddParticipant(list, AcceptSmtp(MailParty.Smtp(labels[i])));
+                }
+            }
+            return list.ToArray();
+        }
+
+        static string[] ThreadParticipants(dynamic item)
+        {
+            var list = new System.Collections.Generic.List<string>();
+            AddParticipant(list, SelfSmtp(item));
+            AddParticipant(list, SenderSmtp(item));
+            try
+            {
+                dynamic recipients = item.Recipients;
+                int count = recipients == null ? 0 : Convert.ToInt32(recipients.Count);
+                for (int i = 1; i <= count; i++)
+                {
+                    try
+                    {
+                        AddParticipant(list, RecipientSmtp(recipients[i]));
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
+            AddDisplayParticipants(list, item, true);
+            AddDisplayParticipants(list, item, false);
+            string[] bccLabels = MailParty.LabelsFromDisplayList(SafeString(() => item.BCC));
+            for (int i = 0; i < bccLabels.Length; i++)
+            {
+                AddParticipant(list, MailParty.Smtp(bccLabels[i]));
+            }
+            return list.ToArray();
+        }
+
+        static string[] RecipientsOfType(dynamic item, int type)
+        {
+            var list = new System.Collections.Generic.List<string>();
+            try
+            {
+                dynamic recipients = item.Recipients;
+                int count = recipients == null ? 0 : Convert.ToInt32(recipients.Count);
+                for (int i = 1; i <= count; i++)
+                {
+                    try
+                    {
+                        dynamic recipient = recipients[i];
+                        int kind = 1;
+                        try
+                        {
+                            kind = Convert.ToInt32(recipient.Type);
+                        }
+                        catch
+                        {
+                        }
+                        if (kind != type)
+                        {
+                            continue;
+                        }
+                        string smtp = RecipientSmtp(recipient);
+                        if (smtp.Length > 0)
+                        {
+                            list.Add(smtp);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
+            if (list.Count == 0)
+            {
+                if (type == 3)
+                {
+                    string[] labels = MailParty.LabelsFromDisplayList(SafeString(() => item.BCC));
+                    for (int i = 0; i < labels.Length; i++)
+                    {
+                        AddParticipant(list, MailParty.Smtp(labels[i]));
+                    }
+                }
+                else
+                {
+                    AddDisplayParticipants(list, item, type != 2);
+                }
+            }
+            return list.ToArray();
+        }
+
+        static void AddDisplayParticipants(System.Collections.Generic.List<string> list, dynamic item, bool toField)
+        {
+            string fallback = toField ? SafeString(() => item.To) : SafeString(() => item.CC);
+            string[] labels = MailParty.LabelsFromDisplayList(fallback);
+            for (int i = 0; i < labels.Length; i++)
+            {
+                AddParticipant(list, MailParty.Smtp(labels[i]));
+            }
+        }
+
+        static void AddParticipant(System.Collections.Generic.List<string> list, string smtp)
+        {
+            if (string.IsNullOrEmpty(smtp))
+            {
+                return;
+            }
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (string.Equals(list[i], smtp, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+            }
+            list.Add(smtp);
+        }
+
         static void SetAddressField(dynamic item, System.Collections.Generic.Dictionary<string, object> draft, string key, int type)
         {
             if (!draft.ContainsKey(key) || draft[key] == null)
@@ -1085,10 +1710,14 @@ namespace KuruOutlook
             string[] parts = new string[list.Count];
             for (int i = 0; i < list.Count; i++)
             {
-                parts[i] = Convert.ToString(list[i]);
+                parts[i] = MailHtml.StripMarks(Convert.ToString(list[i])).Trim();
             }
             string joined = string.Join("; ", parts);
-            if (type == 2)
+            if (type == 3)
+            {
+                item.BCC = joined;
+            }
+            else if (type == 2)
             {
                 item.CC = joined;
             }
@@ -1117,7 +1746,7 @@ namespace KuruOutlook
                         catch
                         {
                         }
-                        bool drop = type == 2 ? kind == 2 : kind != 2 && kind != 3;
+                        bool drop = type == 3 ? kind == 3 : type == 2 ? kind == 2 : kind != 2 && kind != 3;
                         if (drop)
                         {
                             recipient.Delete();
@@ -1131,7 +1760,11 @@ namespace KuruOutlook
             catch
             {
             }
-            if (type == 2)
+            if (type == 3)
+            {
+                item.BCC = "";
+            }
+            else if (type == 2)
             {
                 item.CC = "";
             }

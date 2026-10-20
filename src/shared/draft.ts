@@ -13,6 +13,7 @@ export type MailDraft = {
   subject: string;
   to?: string[];
   cc?: string[];
+  bcc?: string[];
   bodyHtml: string;
   citations: Citation[];
 };
@@ -48,8 +49,10 @@ export function parseMailDraft(value: unknown): { ok: true; draft: MailDraft } |
   };
   const to = presentAddressList(row.to);
   const cc = presentAddressList(row.cc);
+  const bcc = presentAddressList(row.bcc);
   if (to !== undefined) draft.to = to;
   if (cc !== undefined) draft.cc = cc;
+  if (bcc !== undefined) draft.bcc = bcc;
   return { ok: true, draft };
 }
 

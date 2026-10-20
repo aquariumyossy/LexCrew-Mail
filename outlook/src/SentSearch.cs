@@ -157,7 +157,7 @@ namespace KuruOutlook
                 int quote = MailBody.QuoteStart(html);
                 if (quote >= 0 && quote < html.Length)
                 {
-                    prior = Cap(MailBody.VisibleText(html.Substring(quote)), priorMax);
+                    prior = Cap(MailBody.VisibleText(MailBody.WithHeadStyles(html, html.Substring(quote))), priorMax);
                 }
                 if (excerpt.Length > 0 || prior.Length > 0)
                 {
