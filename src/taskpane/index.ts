@@ -40,12 +40,12 @@ import { Memory, Party, renderMemorySection } from "../shared/memory";
 import { renderMailData, renderMailRules, systemPrompt } from "../shared/prompts";
 import { ScopeRow, Settings, TextSetting, UiFontSize, adoptStoredConnection, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
 import { badgeLabel, ingestBytes, ingestFile, ocrScan, readErrorMessage } from "./files/attach";
-import { conversationKey, currentHostMode, listMailFiles, openThreadKey, outlookReady, readConversation, readMailFile, readMailHeader, readParties } from "./host";
+import { conversationKey, currentHostMode, listMailFiles, openItemId, openThreadKey, outlookReady, readConversation, readMailFile, readMailHeader, readParties } from "./host";
 import { HeldMailFile, MAIL_ATTACH_HINT, MailAttachPlan, mailChipNote, planMailAttach } from "./mailAttach";
 import { collectFreeSlots } from "./slots";
 import { renderMarkdown } from "./markdown";
 import { runTurn } from "./runTurn";
-import { beginNewConversation, deleteShownConversation, detachPreviousMail, restoreDecision, sendTarget } from "./conversationState";
+import { acceptTurnEvent, activeMailText, adoptLoadedLines, adoptStartedConversation, beginNewConversation, confirmationApplies, deleteShownConversation, detachPreviousMail, restoreDecision, sendTarget, transcriptSurvivesItemSwitch } from "./conversationState";
 import { Parked, decideThread, park, splitHistory, unpark } from "./threadView";
 import { aboutCopy } from "./about";
 
@@ -93,6 +93,8 @@ export function mount(root: HTMLElement): void {
   let conversationId = "";
   let freshConversation = false;
   let shownKey = "";
+  let shownItemId = "";
+  let viewEpoch = 0;
   let threadSync: Promise<void> | null = null;
   let threadBanner = false;
   const threadDrafts = new Map<string, Parked<FileSource>>();
@@ -322,7 +324,20 @@ export function mount(root: HTMLElement): void {
     };
   }
 
+  function isolateView(): void {
+    viewEpoch += 1;
+    const abort = turnAbort;
+    turnAbort = null;
+    abort?.abort();
+    busy = false;
+    confirmHost.hidden = true;
+    confirmHost.replaceChildren();
+    parties = [];
+    mailHeader = null;
+  }
+
   function askDraft(changes: DraftChange[]): Promise<boolean> {
+    const bound = openItemId();
     const view = renderDraftConfirm(changes);
     return askConfirm((finish) => {
       const box = el("div");
@@ -350,7 +365,7 @@ export function mount(root: HTMLElement): void {
       }
       box.append(confirmActions(finish));
       confirmHost.append(box);
-    }, false);
+    }, false).then((approved) => approved && confirmationApplies(bound, openItemId()));
   }
 
   function askSearch(query: string): Promise<string | null> {
@@ -526,6 +541,7 @@ export function mount(root: HTMLElement): void {
     }
     busy = true;
     turnAbort = new AbortController();
+    const epoch = viewEpoch;
     paint();
     try {
       const target = sendTarget({ conversationId, fresh: freshConversation });
@@ -534,21 +550,32 @@ export function mount(root: HTMLElement): void {
         target.kind === "existing"
           ? { id: target.id }
           : await ensureConversation(conversationKey(), target.kind === "create");
-      freshConversation = false;
-      conversationId = conversation.id;
+      const started = adoptStartedConversation(epoch, viewEpoch, conversation.id, {
+        conversationId,
+        fresh: freshConversation,
+      });
+      if (!started.adopt) return;
+      freshConversation = started.fresh;
+      conversationId = started.conversationId;
       if (!wasFresh && filesFor !== conversation.id) {
         const loaded = await loadConversation(conversation.id);
+        if (!acceptTurnEvent(epoch, viewEpoch)) return;
         committed = mergeFiles(loaded.files, committed);
       }
       filesFor = conversation.id;
       committed = mergeFiles(committed, pending.filter(isReady).map(commit));
       pending = pending.filter((row) => row.status !== "ready");
       committed = await saveConversationFiles(conversation.id, committed);
+      if (!acceptTurnEvent(epoch, viewEpoch)) return;
       const hasFiles = committed.length > 0;
+      const cachedItem = shownItemId;
+      const cachedMail = renderMailData(mailHeader);
       rememberMail();
+      const liveItem = openItemId();
+      if (liveItem) shownItemId = liveItem;
       const memoryText = renderMemorySection(memory, parties);
       const mailText = renderMailRules(mailHeader);
-      const mailData = renderMailData(mailHeader);
+      const mailData = activeMailText(cachedItem, cachedMail, liveItem, renderMailData(mailHeader));
       const reserved = systemPrompt({
         files: hasFiles,
         searxng: Boolean(settings.searxngUrl.trim()),
@@ -558,10 +585,13 @@ export function mount(root: HTMLElement): void {
       }).length + mailData.length + instruction.length;
       const forModel = modelTurnText(instruction, committed, settings.contextLimit, reserved);
       const forHistory = historyTurnText(instruction, committed, settings.contextLimit, reserved);
+      if (!acceptTurnEvent(epoch, viewEpoch)) return;
       thread.push({ role: "user", content: forHistory });
       paint();
       await storeMessage(conversation.id, { role: "user", content: forHistory });
+      if (!acceptTurnEvent(epoch, viewEpoch)) return;
       const history = await loadMessages(conversation.id);
+      if (!acceptTurnEvent(epoch, viewEpoch)) return;
       const prior = history.slice(0, -1);
       await runTurn({
         settings,
@@ -575,8 +605,10 @@ export function mount(root: HTMLElement): void {
         readThread: currentThread,
         confirmDraft: askDraft,
         confirmSearch: askSearch,
+        currentItemId: openItemId,
         signal: turnAbort.signal,
         onDelta: (snapshot) => {
+          if (!acceptTurnEvent(epoch, viewEpoch)) return;
           const draft = thread.find((row) => row.streaming);
           if (draft) {
             draft.content = snapshot.content;
@@ -587,6 +619,7 @@ export function mount(root: HTMLElement): void {
           paint();
         },
         onMessage: (message) => {
+          if (!acceptTurnEvent(epoch, viewEpoch)) return;
           const draft = thread.findIndex((row) => row.streaming);
           if (draft >= 0) thread.splice(draft, 1);
           thread.push({
@@ -608,14 +641,17 @@ export function mount(root: HTMLElement): void {
       });
       banner = null;
     } catch (error) {
+      if (!acceptTurnEvent(epoch, viewEpoch)) return;
       const draft = thread.findIndex((row) => row.streaming);
       if (draft >= 0) thread.splice(draft, 1);
       const aborted = error instanceof DOMException && error.name === "AbortError";
       banner = aborted ? null : { kind: "error", text: error instanceof Error ? error.message : "失敗しました。" };
     } finally {
-      busy = false;
-      turnAbort = null;
-      paint();
+      if (acceptTurnEvent(epoch, viewEpoch)) {
+        busy = false;
+        turnAbort = null;
+        paint();
+      }
     }
   }
 
@@ -1315,6 +1351,7 @@ export function mount(root: HTMLElement): void {
     newer.type = "button";
     newer.className = "primary history-new";
     newer.addEventListener("click", () => {
+      isolateView();
       dropFiles();
       const next = beginNewConversation();
       conversationId = next.conversationId;
@@ -1372,6 +1409,7 @@ export function mount(root: HTMLElement): void {
         void deleteConversation(row.id).then(() => {
           if (conversationId === row.id) {
             const next = deleteShownConversation({ conversationId, fresh: freshConversation }, row.id);
+            isolateView();
             dropFiles();
             conversationId = next.conversationId;
             freshConversation = next.fresh;
@@ -1400,20 +1438,23 @@ export function mount(root: HTMLElement): void {
     paint();
   }
 
-  async function restoreConversation(id: string): Promise<void> {
+  async function restoreConversation(id: string, startedEpoch?: number): Promise<boolean> {
     const loaded = await loadConversation(id);
+    const settled = adoptLoadedLines(startedEpoch ?? viewEpoch, viewEpoch, loaded.messages, []);
+    if (startedEpoch !== undefined && !settled.adopt) return false;
     clearThread();
     conversationId = id;
     freshConversation = false;
     filesFor = id;
     committed = loaded.files;
-    thread.splice(0, thread.length, ...loaded.messages.map((message) => ({
+    thread.splice(0, thread.length, ...settled.lines.map((message) => ({
       role: message.role,
       content: message.content,
       reasoningContent: message.reasoningContent,
       toolCalls: message.tool_calls,
       toolCallId: message.tool_call_id,
     })));
+    return true;
   }
 
   function clearThread(): void {
@@ -1424,13 +1465,37 @@ export function mount(root: HTMLElement): void {
   }
 
   function syncThread(): void {
-    if (!outlookReady() || document.visibilityState === "hidden" || threadSync) return;
+    if (!outlookReady() || document.visibilityState === "hidden") return;
     let observed = "";
+    let itemId = "";
     try {
       observed = openThreadKey();
+      itemId = openItemId();
     } catch {
       return;
     }
+    if (itemId && itemId !== shownItemId) {
+      const keepTranscript = transcriptSurvivesItemSwitch(shownKey, observed);
+      isolateView();
+      shownItemId = itemId;
+      if (!keepTranscript) {
+        if (!observed && shownKey) {
+          park(threadDrafts, shownKey, { text: composer.input.value, pending: pending.slice() });
+        }
+        dropFiles();
+        conversationId = "";
+        filesFor = "";
+        thread.splice(0, thread.length);
+        if (!observed) {
+          composer.input.value = "";
+          shownKey = "";
+          fit(composer.input);
+        }
+      }
+      rememberMail();
+      paint();
+    }
+    if (threadSync) return;
     const move = decideThread(shownKey, observed, {
       busy,
       loading: pending.some(isPending) || mailJobs.some(isPending),
@@ -1446,6 +1511,7 @@ export function mount(root: HTMLElement): void {
   }
 
   async function applyThread(key: string): Promise<void> {
+    const epoch = viewEpoch;
     const typed = { text: composer.input.value, pending: pending.slice() };
     const carried = !shownKey && !conversationId ? committed.slice() : [];
     if (shownKey) {
@@ -1485,6 +1551,10 @@ export function mount(root: HTMLElement): void {
     committed = [];
     try {
       const rows = await listConversations(key);
+      if (!acceptTurnEvent(epoch, viewEpoch)) {
+        putBack();
+        return;
+      }
       let current = "";
       try {
         current = openThreadKey();
@@ -1500,7 +1570,11 @@ export function mount(root: HTMLElement): void {
       freshConversation = decision.state.fresh;
       conversationId = decision.state.conversationId;
       if (decision.restoreId) {
-        await restoreConversation(decision.restoreId);
+        const restored = await restoreConversation(decision.restoreId, epoch);
+        if (!restored) {
+          putBack();
+          return;
+        }
         if (kept.length) committed = mergeFiles(committed, kept);
       } else if (!decision.state.fresh) {
         clearThread();
@@ -1520,6 +1594,10 @@ export function mount(root: HTMLElement): void {
       paint();
       refreshMailAttachments();
     } catch (error) {
+      if (!acceptTurnEvent(epoch, viewEpoch)) {
+        putBack();
+        return;
+      }
       if (!freshConversation) restorePrevious();
       putBack();
       const text = error instanceof Error ? error.message : "このメールの会話を読めません。";

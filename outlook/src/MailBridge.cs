@@ -27,23 +27,24 @@ namespace KuruOutlook
                 dynamic item = MailTarget.Draft(_window, out inspector);
                 if (item == null)
                 {
-                    return "{\"mode\":\"none\",\"conversationId\":\"\"}";
+                    return "{\"mode\":\"none\",\"conversationId\":\"\",\"itemId\":\"\"}";
                 }
                 string messageClass = Convert.ToString(item.MessageClass);
                 bool sent = SafeSent(item);
                 string mode = MailGate.Mode(inspector, messageClass, sent);
+                string itemId = SafeString(() => Convert.ToString(item.EntryID));
                 string conversationId = "";
                 if (mode != "not-message")
                 {
                     conversationId = MailTarget.ConversationId(
                         SafeString(() => item.ConversationID),
-                        SafeString(() => Convert.ToString(item.EntryID)));
+                        itemId);
                 }
-                return "{\"mode\":\"" + Json(mode) + "\",\"conversationId\":\"" + Json(conversationId) + "\"}";
+                return "{\"mode\":\"" + Json(mode) + "\",\"conversationId\":\"" + Json(conversationId) + "\",\"itemId\":\"" + Json(itemId) + "\"}";
             }
             catch (Exception ex)
             {
-                return "{\"mode\":\"none\",\"conversationId\":\"\",\"error\":\"" + Json(ex.Message) + "\"}";
+                return "{\"mode\":\"none\",\"conversationId\":\"\",\"itemId\":\"\",\"error\":\"" + Json(ex.Message) + "\"}";
             }
             finally
             {

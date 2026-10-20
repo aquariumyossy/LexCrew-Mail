@@ -1,4 +1,5 @@
 import { HostMode, MailDraft, asStringList, emptyDraft } from "../shared/draft";
+import { historyKey } from "./conversationState";
 import { parseConversation, sealDraftWrite, ThreadMessage } from "../shared/draftGate";
 import { Party, normalizeAddress } from "../shared/memory";
 import { Appointment, formatLocal } from "../shared/freeSlots";
@@ -36,24 +37,32 @@ export function currentHostMode(): HostMode {
   return parsed.mode ?? "none";
 }
 
+function readContext(): { conversationId: string; itemId: string } {
+  const parsed = JSON.parse(bridge().getContext()) as { conversationId?: unknown; itemId?: unknown };
+  return {
+    conversationId: typeof parsed.conversationId === "string" ? parsed.conversationId : "",
+    itemId: typeof parsed.itemId === "string" ? parsed.itemId : "",
+  };
+}
+
 export function openThreadKey(): string {
   if (!outlookReady()) return "";
-  const parsed = JSON.parse(bridge().getContext()) as { conversationId?: string };
-  return typeof parsed.conversationId === "string" ? parsed.conversationId : "";
+  return readContext().conversationId;
+}
+
+export function openItemId(): string {
+  if (!outlookReady()) return "";
+  return readContext().itemId;
 }
 
 export function conversationKey(): string {
-  const parsed = JSON.parse(bridge().getContext()) as { conversationId?: string };
-  if (parsed.conversationId) {
-    return parsed.conversationId;
-  }
+  const context = readContext();
   const stored = sessionStorage.getItem("kuru.tempKey");
-  if (stored) {
-    return stored;
+  const temp = stored || `temp_${Date.now().toString(36)}`;
+  if (!stored && !context.conversationId && !context.itemId) {
+    sessionStorage.setItem("kuru.tempKey", temp);
   }
-  const key = `temp_${Date.now().toString(36)}`;
-  sessionStorage.setItem("kuru.tempKey", key);
-  return key;
+  return historyKey(context.conversationId, context.itemId, temp);
 }
 
 export type OpenItem = MailDraft & { from: string };

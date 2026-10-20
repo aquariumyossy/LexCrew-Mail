@@ -1,5 +1,6 @@
 import { indexHitsForModel } from "../shared/argos";
 import { decideApply, MailDraft, parseMailDraft } from "../shared/draft";
+import { refuseStaleWrite } from "./conversationState";
 import { DraftChange, gateDraftWrite, ThreadSnapshot } from "../shared/draftGate";
 import { draftForeignError } from "../shared/japaneseHan";
 import { sanitizeMailHtml } from "../shared/mailHtml";
@@ -40,6 +41,7 @@ export async function runTurn(input: {
   readThread?: () => ThreadSnapshot;
   confirmDraft?: (changes: DraftChange[]) => Promise<boolean>;
   confirmSearch?: (query: string) => Promise<string | null>;
+  currentItemId?: () => string;
   signal: AbortSignal;
   onDelta: (snapshot: { content: string; reasoningContent: string }) => void;
   onMessage: (message: StoredChatMessage) => void;
@@ -104,6 +106,7 @@ async function executeTool(
     readThread?: () => ThreadSnapshot;
     confirmDraft?: (changes: DraftChange[]) => Promise<boolean>;
     confirmSearch?: (query: string) => Promise<string | null>;
+    currentItemId?: () => string;
     signal: AbortSignal;
   }
 ): Promise<string> {
@@ -147,9 +150,11 @@ async function applyDraft(
     settings: Settings;
     readThread?: () => ThreadSnapshot;
     confirmDraft?: (changes: DraftChange[]) => Promise<boolean>;
+    currentItemId?: () => string;
     signal: AbortSignal;
   }
 ): Promise<string> {
+  const boundItem = input.currentItemId?.() ?? "";
   const parsed = parseMailDraft(raw);
   if (!parsed.ok) return `エラー: ${parsed.error}`;
   const draft: MailDraft = { ...parsed.draft, bodyHtml: sanitizeMailHtml(parsed.draft.bodyHtml) };
@@ -173,6 +178,8 @@ async function applyDraft(
     toWrite = { ...gated.draft, bodyHtml: draft.bodyHtml, citations: draft.citations };
     headerApproved = gated.headerApproved;
   }
+  const stale = refuseStaleWrite(boundItem, input.currentItemId?.() ?? "");
+  if (stale) return `エラー: ${stale}`;
   return writeDraft(toWrite, mailFontStamp(input.settings), { headerApproved });
 }
 
