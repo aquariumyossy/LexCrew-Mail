@@ -58,6 +58,7 @@ export type Settings = {
   mailFontId: MailFontId;
   mailFontSizePt: number;
   uiFontSize: UiFontSize;
+  dismissedLanHttpUrl: string;
 };
 
 export type TextSetting =
@@ -94,6 +95,7 @@ export function loadSettings(): Settings {
     mailFontId: normalizeMailFontId(undefined),
     mailFontSizePt: normalizeMailFontSizePt(undefined),
     uiFontSize: normalizeUiFontSize(undefined),
+    dismissedLanHttpUrl: "",
   };
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
@@ -115,6 +117,7 @@ export function loadSettings(): Settings {
       mailFontId: normalizeMailFontId(parsed.mailFontId),
       mailFontSizePt: normalizeMailFontSizePt(parsed.mailFontSizePt),
       uiFontSize: normalizeUiFontSize(parsed.uiFontSize),
+      dismissedLanHttpUrl: typeof parsed.dismissedLanHttpUrl === "string" ? parsed.dismissedLanHttpUrl.trim() : "",
     };
   } catch {
     return empty;

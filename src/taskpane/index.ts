@@ -29,7 +29,7 @@ import {
   sameFile,
   tooManyFiles,
 } from "../shared/attachedFiles";
-import { plainHttpLanWarning } from "../shared/endpoint";
+import { plainHttpLanWarning, visibleLanHttpWarning, withLanHttpDismissed } from "../shared/endpoint";
 import { connectionNotice, llmConfigured } from "./connectionState";
 import { DraftChange, renderDraftConfirm, ThreadSnapshot } from "../shared/draftGate";
 import { REMOTE_OCR_NOTICE } from "../shared/ocr";
@@ -147,7 +147,7 @@ export function mount(root: HTMLElement): void {
   actions.append(historyBtn, memoryBtn, missing, connectBtn, scheduleBtn, settingsBtn, infoBtn);
   header.append(meter, actions);
 
-  const lanWarn = el("p");
+  const lanWarn = el("div");
   lanWarn.className = "lan-warn";
   lanWarn.hidden = true;
   const buildWarn = el("p");
@@ -272,9 +272,17 @@ export function mount(root: HTMLElement): void {
   }
 
   function paint(): void {
-    const lan = plainHttpLanWarning(settings.llmBaseUrl);
+    lanWarn.replaceChildren();
+    const shownUrl = settings.llmBaseUrl;
+    const lan = visibleLanHttpWarning(shownUrl, settings.dismissedLanHttpUrl);
     lanWarn.hidden = !lan;
-    lanWarn.textContent = lan ?? "";
+    if (lan) {
+      lanWarn.append(bannerView({ kind: "warning", text: lan }, () => {
+        settings = withLanHttpDismissed(settings, shownUrl);
+        saveSettings(settings);
+        paint();
+      }));
+    }
     missing.hidden = llmConfigured({ llmBaseUrl: settings.llmBaseUrl, llmApiKey: settings.llmApiKey, hasApiKey: apiKeyOnFile });
     bannerHost.textContent = "";
     if (banner) bannerHost.append(bannerView(banner, () => { banner = null; paint(); }));

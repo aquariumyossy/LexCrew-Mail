@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { SETTINGS_STORAGE_KEY } from "../shared/constants";
+import { LAN_HTTP_WARNING, plainHttpLanWarning, visibleLanHttpWarning, withLanHttpDismissed } from "../shared/endpoint";
+import { loadSettings, saveSettings, setKeepConnectionInStorage, takeAdoptedSettings } from "./api";
 import { applyAdopt, connectionNotice, llmConfigured, settingsForStorage } from "./connectionState";
 
 const stored = {
@@ -72,5 +75,41 @@ describe("saved key reported only as presence", () => {
     });
     expect(applied.settings.llmApiKey).toBe("");
     expect(connectionNotice({ ...applied.settings, hasApiKey: true })).toBeNull();
+  });
+});
+
+describe("dismissed LAN notice", () => {
+  const lan = "http://192.168.1.8:8000/v1";
+  const other = "http://10.0.0.2/v1";
+
+  afterEach(() => {
+    setKeepConnectionInStorage(true);
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the dismissed URL when the connection file owns the URL", () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        store.set(key, value);
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+    });
+    const drafted = withLanHttpDismissed({ ...loadSettings(), llmBaseUrl: lan, llmApiKey: "secret", model: "qwen" }, lan);
+    const adopted = takeAdoptedSettings(drafted, { kind: "ready", llmBaseUrl: lan, searxngUrl: "", hasApiKey: true });
+    saveSettings(adopted);
+    const loaded = loadSettings();
+    expect(loaded.llmBaseUrl).toBe("");
+    expect(loaded.llmApiKey).toBe("");
+    expect(loaded.model).toBe("qwen");
+    expect(loaded.dismissedLanHttpUrl).toBe(lan);
+    expect(JSON.parse(store.get(SETTINGS_STORAGE_KEY) || "{}")).not.toHaveProperty("llmApiKey");
+    const back = takeAdoptedSettings(loaded, { kind: "ready", llmBaseUrl: lan, searxngUrl: "", hasApiKey: true });
+    expect(visibleLanHttpWarning(back.llmBaseUrl, back.dismissedLanHttpUrl)).toBeNull();
+    expect(visibleLanHttpWarning(other, back.dismissedLanHttpUrl)).toBe(LAN_HTTP_WARNING);
+    expect(plainHttpLanWarning(lan)).toBe(LAN_HTTP_WARNING);
   });
 });
