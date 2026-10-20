@@ -8,14 +8,29 @@ export type ThreadSnapshot = {
   from: string;
   to: string[];
   cc: string[];
+  bcc?: string[];
   parties: ThreadParty[];
 };
 
 export type DraftChange = {
-  field: "subject" | "to" | "cc";
+  field: "subject" | "to" | "cc" | "bcc";
   before: string;
   after: string;
+  /** Mailboxes on this field that are not in the thread. The pane renders these, not model text. */
+  outside: string[];
 };
+
+/** Fixed pane copy. A message in the mail or the draft cannot replace it. */
+export const OUTSIDE_THREAD_WARNING = "このアドレスはスレッド内に出てきません。宛先として正しいか確認してください。";
+
+const FIELD_LABEL: Record<DraftChange["field"], string> = {
+  subject: "件名",
+  to: "宛先",
+  cc: "CC",
+  bcc: "BCC",
+};
+
+const MAILBOX = /^[a-z0-9](?:[a-z0-9._%+-]{0,62}[a-z0-9])?@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
 export type DraftReview =
   | { ok: true; draft: MailDraft; changes: DraftChange[] }
@@ -34,12 +49,17 @@ export function smtpOf(value: string): string {
   return candidate;
 }
 
+export function isMailbox(value: string): boolean {
+  const smtp = smtpOf(value);
+  return smtp.length > 0 && smtp.length <= 254 && MAILBOX.test(smtp);
+}
+
 export function reviewDraftChange(draft: MailDraft, thread: ThreadSnapshot): DraftReview {
   const known = knownParties(thread);
   const allow = new Set(known.map((party) => party.address));
-  for (const label of [thread.from, ...(thread.to || []), ...(thread.cc || [])]) {
+  for (const label of [thread.from, ...(thread.to || []), ...(thread.cc || []), ...(thread.bcc || [])]) {
     const smtp = smtpOf(label);
-    if (smtp) allow.add(smtp);
+    if (smtp && isMailbox(smtp)) allow.add(smtp);
   }
 
   const next: MailDraft = {
@@ -53,7 +73,7 @@ export function reviewDraftChange(draft: MailDraft, thread: ThreadSnapshot): Dra
   const currentSubject = stripSteeringMarks(thread.subject || "").trim();
   if (subject && subject !== currentSubject) {
     next.subject = subject;
-    changes.push({ field: "subject", before: currentSubject || "（なし）", after: subject });
+    changes.push({ field: "subject", before: currentSubject || "（なし）", after: subject, outside: [] });
   }
 
   const to = resolveField(draft.to, "宛先", known, allow);
@@ -66,6 +86,7 @@ export function reviewDraftChange(draft: MailDraft, thread: ThreadSnapshot): Dra
         field: "to",
         before: shown(thread.to),
         after: shown(to.addresses),
+        outside: to.outside,
       });
     }
   }
@@ -80,11 +101,77 @@ export function reviewDraftChange(draft: MailDraft, thread: ThreadSnapshot): Dra
         field: "cc",
         before: shown(thread.cc),
         after: shown(cc.addresses),
+        outside: cc.outside,
+      });
+    }
+  }
+
+  const bcc = resolveField(draft.bcc, "BCC", known, allow);
+  if (!bcc.ok) return bcc;
+  if (bcc.present) {
+    const current = resolveField(thread.bcc || [], "BCC", known, allowAll(thread.bcc || [], allow), true);
+    if (!sameSet(bcc.addresses, current.ok ? current.addresses : [])) {
+      next.bcc = bcc.addresses;
+      changes.push({
+        field: "bcc",
+        before: shown(thread.bcc),
+        after: shown(bcc.addresses),
+        outside: bcc.outside,
       });
     }
   }
 
   return { ok: true, draft: next, changes };
+}
+
+export function renderDraftConfirm(changes: DraftChange[]): { warning: string | null; outside: string[]; rows: Array<{ label: string; before: string; after: string }> } {
+  const outside: string[] = [];
+  for (const change of changes) {
+    for (const address of change.outside) {
+      if (!outside.includes(address)) outside.push(address);
+    }
+  }
+  return {
+    warning: outside.length ? OUTSIDE_THREAD_WARNING : null,
+    outside,
+    rows: changes.map((change) => ({
+      label: FIELD_LABEL[change.field],
+      before: change.before,
+      after: change.after,
+    })),
+  };
+}
+
+/**
+ * Fields the host may write. Approval is an argument, never a property of the draft,
+ * so tool JSON cannot set headerApproved or replace the pane warning.
+ */
+export function sealDraftWrite(draft: MailDraft, headerApproved: boolean): Record<string, unknown> {
+  const sealed: Record<string, unknown> = {
+    subject: draft.subject,
+    bodyHtml: draft.bodyHtml,
+    citations: draft.citations,
+  };
+  if (draft.to !== undefined) sealed.to = draft.to;
+  if (draft.cc !== undefined) sealed.cc = draft.cc;
+  if (draft.bcc !== undefined) sealed.bcc = draft.bcc;
+  if (headerApproved) sealed.headerApproved = true;
+  return sealed;
+}
+
+/** Confirmation is the only way a header change, including an out-of-thread address, may be written. */
+export async function gateDraftWrite(
+  draft: MailDraft,
+  thread: ThreadSnapshot,
+  confirm: ((changes: DraftChange[]) => Promise<boolean>) | undefined
+): Promise<{ ok: true; draft: MailDraft; headerApproved: boolean } | { ok: false; error: string }> {
+  const review = reviewDraftChange(draft, thread);
+  if (!review.ok) return review;
+  if (!review.changes.length) return { ok: true, draft: review.draft, headerApproved: false };
+  if (!confirm) return { ok: false, error: "件名または宛先の変更は確認できません。" };
+  const approved = await confirm(review.changes);
+  if (!approved) return { ok: false, error: "件名または宛先の変更はキャンセルされました。本文は書いていません。" };
+  return { ok: true, draft: review.draft, headerApproved: true };
 }
 
 function allowAll(labels: string[], allow: Set<string>): Set<string> {
@@ -100,7 +187,7 @@ function knownParties(thread: ThreadSnapshot): NamedAddress[] {
   const out: NamedAddress[] = [];
   for (const party of thread.parties || []) {
     const address = smtpOf(party.address || "");
-    if (!address) continue;
+    if (!address || !isMailbox(address)) continue;
     out.push({ name: stripSteeringMarks(party.name || "").trim(), address });
   }
   return out;
@@ -112,32 +199,36 @@ function resolveField(
   parties: NamedAddress[],
   allow: Set<string>,
   lenient = false
-): { ok: true; present: boolean; addresses: string[] } | { ok: false; error: string } {
-  if (!values) return { ok: true, present: false, addresses: [] };
+): { ok: true; present: boolean; addresses: string[]; outside: string[] } | { ok: false; error: string } {
+  if (!values) return { ok: true, present: false, addresses: [], outside: [] };
   const addresses: string[] = [];
+  const outside: string[] = [];
   for (const raw of values) {
     const pieces = stripSteeringMarks(raw).split(/[;,]/).map((piece) => piece.trim()).filter(Boolean);
     if (!pieces.length) continue;
     for (const piece of pieces) {
       const smtp = smtpOf(piece);
       if (smtp) {
-        if (!allow.has(smtp)) {
-          return { ok: false, error: `スレッドの参加者以外の宛先です。${smtp}` };
-        }
-        addresses.push(smtp);
+        if (!isMailbox(smtp)) return { ok: false, error: `${label}の形式が不正です。${piece}` };
+        pushUnique(addresses, smtp);
+        if (!allow.has(smtp)) pushUnique(outside, smtp);
         continue;
       }
       const matches = parties.filter((party) => party.name === piece);
       const unique = [...new Set(matches.map((party) => party.address))];
       if (unique.length === 1 && allow.has(unique[0])) {
-        addresses.push(unique[0]);
+        pushUnique(addresses, unique[0]);
         continue;
       }
       if (lenient) continue;
-      return { ok: false, error: `${label}を解釈できません。${piece}` };
+      return { ok: false, error: `${label}の形式が不正です。${piece}` };
     }
   }
-  return { ok: true, present: true, addresses };
+  return { ok: true, present: true, addresses, outside };
+}
+
+function pushUnique(into: string[], value: string): void {
+  if (!into.includes(value)) into.push(value);
 }
 
 function sameSet(left: string[], right: string[]): boolean {

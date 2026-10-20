@@ -1,4 +1,5 @@
 import { HostMode, MailDraft, asStringList, emptyDraft } from "../shared/draft";
+import { sealDraftWrite } from "../shared/draftGate";
 import { Party, normalizeAddress } from "../shared/memory";
 import { Appointment, formatLocal } from "../shared/freeSlots";
 import { MailFontStamp } from "../shared/mailFont";
@@ -61,6 +62,7 @@ export type MailHeader = {
   from: string;
   to: string[];
   cc: string[];
+  bcc: string[];
 };
 
 export function readMailHeader(): MailHeader | null {
@@ -72,6 +74,7 @@ export function readMailHeader(): MailHeader | null {
       from?: unknown;
       to?: unknown;
       cc?: unknown;
+      bcc?: unknown;
     };
     if (parsed.ok !== true) return null;
     return {
@@ -79,6 +82,7 @@ export function readMailHeader(): MailHeader | null {
       from: typeof parsed.from === "string" ? parsed.from : "",
       to: asStringList(parsed.to),
       cc: asStringList(parsed.cc),
+      bcc: asStringList(parsed.bcc),
     };
   } catch {
     return null;
@@ -95,7 +99,7 @@ export function readParties(): Party[] {
       if (!row || typeof row !== "object") continue;
       const record = row as { role?: unknown; name?: unknown; address?: unknown };
       const role = record.role;
-      if (role !== "from" && role !== "to" && role !== "cc") continue;
+      if (role !== "from" && role !== "to" && role !== "cc" && role !== "bcc") continue;
       const address = normalizeAddress(typeof record.address === "string" ? record.address : "");
       if (!address) continue;
       parties.push({ role, name: typeof record.name === "string" ? record.name : "", address });
@@ -201,7 +205,7 @@ export async function searchSentMail(query: string, address: string): Promise<{ 
 
 export async function writeDraft(draft: MailDraft, font: MailFontStamp, options?: { headerApproved?: boolean }): Promise<string> {
   const result = bridge().writeDraft(
-    JSON.stringify({ ...draft, mailFont: font, ...(options?.headerApproved ? { headerApproved: true } : {}) })
+    JSON.stringify({ ...sealDraftWrite(draft, options?.headerApproved === true), mailFont: font })
   );
   if (result.startsWith("エラー:")) {
     throw new Error(result.slice("エラー:".length).trim());

@@ -9,7 +9,7 @@ import {
 export type WritingNote = { id: string; text: string };
 export type PersonNote = { address: string; name: string; text: string; updatedAt: number };
 export type Memory = { notes: WritingNote[]; people: PersonNote[] };
-export type PartyRole = "from" | "to" | "cc";
+export type PartyRole = "from" | "to" | "cc" | "bcc";
 export type Party = { role: PartyRole; name: string; address: string };
 export type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
 

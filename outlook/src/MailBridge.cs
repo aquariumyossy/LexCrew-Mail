@@ -75,13 +75,15 @@ namespace KuruOutlook
                 string from;
                 string[] to;
                 string[] cc;
-                FillHeaderLists(item, out from, out to, out cc);
+                string[] bcc;
+                FillHeaderLists(item, out from, out to, out cc, out bcc);
                 var payload = new System.Collections.Generic.Dictionary<string, object>
                 {
                     { "subject", SafeString(() => item.Subject) },
                     { "from", from },
                     { "to", to },
                     { "cc", cc },
+                    { "bcc", bcc },
                     { "bodyHtml", MailBody.VisibleText(html) },
                     { "citations", new object[0] }
                 };
@@ -112,14 +114,16 @@ namespace KuruOutlook
                 string from;
                 string[] to;
                 string[] cc;
-                FillHeaderLists(item, out from, out to, out cc);
+                string[] bcc;
+                FillHeaderLists(item, out from, out to, out cc, out bcc);
                 var payload = new System.Collections.Generic.Dictionary<string, object>
                 {
                     { "ok", true },
                     { "subject", SafeString(() => item.Subject) },
                     { "from", from },
                     { "to", to },
-                    { "cc", cc }
+                    { "cc", cc },
+                    { "bcc", bcc }
                 };
                 return new JavaScriptSerializer().Serialize(payload);
             }
@@ -323,6 +327,8 @@ namespace KuruOutlook
                     DraftAddresses(draft, "to"),
                     RecipientsOfType(item, 2),
                     DraftAddresses(draft, "cc"),
+                    RecipientsOfType(item, 3),
+                    DraftAddresses(draft, "bcc"),
                     ThreadParticipants(item));
                 if (refusal != null)
                 {
@@ -346,6 +352,7 @@ namespace KuruOutlook
                 }
                 SetAddressField(item, draft, "to", 1);
                 SetAddressField(item, draft, "cc", 2);
+                SetAddressField(item, draft, "bcc", 3);
                 return "作成ウィンドウへ書き戻しました。";
             }
             catch (Exception ex)
@@ -894,6 +901,7 @@ namespace KuruOutlook
         {
             var to = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
             var cc = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
+            var bcc = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
             try
             {
                 dynamic recipients = item.Recipients;
@@ -911,16 +919,19 @@ namespace KuruOutlook
                         catch
                         {
                         }
-                        if (kind == 3)
-                        {
-                            continue;
-                        }
                         string address = RecipientSmtp(recipient);
                         string name = MailParty.PersonName(
                             SafeString(() => Convert.ToString(recipient.Name)),
                             SafeString(() => Convert.ToString(recipient.Address))
                         );
-                        AddParty(kind == 2 ? cc : to, kind == 2 ? "cc" : "to", name, address, self);
+                        if (kind == 3)
+                        {
+                            AddParty(bcc, "bcc", name, address, self);
+                        }
+                        else
+                        {
+                            AddParty(kind == 2 ? cc : to, kind == 2 ? "cc" : "to", name, address, self);
+                        }
                     }
                     catch
                     {
@@ -932,6 +943,7 @@ namespace KuruOutlook
             }
             parties.AddRange(to);
             parties.AddRange(cc);
+            parties.AddRange(bcc);
         }
 
         static string SenderLabel(dynamic item)
@@ -946,20 +958,23 @@ namespace KuruOutlook
             );
         }
 
-        static void FillHeaderLists(dynamic item, out string from, out string[] to, out string[] cc)
+        static void FillHeaderLists(dynamic item, out string from, out string[] to, out string[] cc, out string[] bcc)
         {
             from = MailParty.PartyLabel(SenderLabel(item), SenderSmtp(item));
             var toList = new System.Collections.Generic.List<string>();
             var ccList = new System.Collections.Generic.List<string>();
-            CollectHeaderParties(item, toList, ccList);
+            var bccList = new System.Collections.Generic.List<string>();
+            CollectHeaderParties(item, toList, ccList, bccList);
             to = MailParty.CapParties(toList);
             cc = MailParty.CapParties(ccList);
+            bcc = MailParty.CapParties(bccList);
         }
 
         static void CollectHeaderParties(
             dynamic item,
             System.Collections.Generic.List<string> to,
-            System.Collections.Generic.List<string> cc)
+            System.Collections.Generic.List<string> cc,
+            System.Collections.Generic.List<string> bcc)
         {
             try
             {
@@ -978,10 +993,6 @@ namespace KuruOutlook
                         catch
                         {
                         }
-                        if (kind == 3)
-                        {
-                            continue;
-                        }
                         string rawName = SafeString(() => Convert.ToString(recipient.Name));
                         string rawAddress = SafeString(() => Convert.ToString(recipient.Address));
                         string smtp = RecipientSmtp(recipient);
@@ -990,7 +1001,7 @@ namespace KuruOutlook
                             smtp = rawAddress;
                         }
                         string label = MailParty.PartyLabel(rawName.Length > 0 ? rawName : rawAddress, smtp);
-                        AddUnique(kind == 2 ? cc : to, label);
+                        AddUnique(kind == 3 ? bcc : kind == 2 ? cc : to, label);
                     }
                     catch
                     {
@@ -1007,6 +1018,14 @@ namespace KuruOutlook
             if (cc.Count == 0)
             {
                 AddDisplayFallback(cc, item, false);
+            }
+            if (bcc.Count == 0)
+            {
+                string[] labels = MailParty.LabelsFromDisplayList(SafeString(() => item.BCC));
+                for (int i = 0; i < labels.Length; i++)
+                {
+                    AddUnique(bcc, labels[i]);
+                }
             }
         }
 
@@ -1127,20 +1146,7 @@ namespace KuruOutlook
                 {
                     try
                     {
-                        dynamic recipient = recipients[i];
-                        int kind = 1;
-                        try
-                        {
-                            kind = Convert.ToInt32(recipient.Type);
-                        }
-                        catch
-                        {
-                        }
-                        if (kind == 3)
-                        {
-                            continue;
-                        }
-                        AddParticipant(list, RecipientSmtp(recipient));
+                        AddParticipant(list, RecipientSmtp(recipients[i]));
                     }
                     catch
                     {
@@ -1152,6 +1158,11 @@ namespace KuruOutlook
             }
             AddDisplayParticipants(list, item, true);
             AddDisplayParticipants(list, item, false);
+            string[] bccLabels = MailParty.LabelsFromDisplayList(SafeString(() => item.BCC));
+            for (int i = 0; i < bccLabels.Length; i++)
+            {
+                AddParticipant(list, MailParty.Smtp(bccLabels[i]));
+            }
             return list.ToArray();
         }
 
@@ -1195,7 +1206,18 @@ namespace KuruOutlook
             }
             if (list.Count == 0)
             {
-                AddDisplayParticipants(list, item, type != 2);
+                if (type == 3)
+                {
+                    string[] labels = MailParty.LabelsFromDisplayList(SafeString(() => item.BCC));
+                    for (int i = 0; i < labels.Length; i++)
+                    {
+                        AddParticipant(list, MailParty.Smtp(labels[i]));
+                    }
+                }
+                else
+                {
+                    AddDisplayParticipants(list, item, type != 2);
+                }
             }
             return list.ToArray();
         }
@@ -1248,7 +1270,11 @@ namespace KuruOutlook
                 parts[i] = MailHtml.StripMarks(Convert.ToString(list[i])).Trim();
             }
             string joined = string.Join("; ", parts);
-            if (type == 2)
+            if (type == 3)
+            {
+                item.BCC = joined;
+            }
+            else if (type == 2)
             {
                 item.CC = joined;
             }
@@ -1277,7 +1303,7 @@ namespace KuruOutlook
                         catch
                         {
                         }
-                        bool drop = type == 2 ? kind == 2 : kind != 2 && kind != 3;
+                        bool drop = type == 3 ? kind == 3 : type == 2 ? kind == 2 : kind != 2 && kind != 3;
                         if (drop)
                         {
                             recipient.Delete();
@@ -1291,7 +1317,11 @@ namespace KuruOutlook
             catch
             {
             }
-            if (type == 2)
+            if (type == 3)
+            {
+                item.BCC = "";
+            }
+            else if (type == 2)
             {
                 item.CC = "";
             }

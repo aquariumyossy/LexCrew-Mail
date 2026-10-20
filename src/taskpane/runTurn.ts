@@ -1,6 +1,6 @@
 import { indexHitsForModel } from "../shared/argos";
 import { decideApply, MailDraft, parseMailDraft } from "../shared/draft";
-import { DraftChange, reviewDraftChange, ThreadSnapshot } from "../shared/draftGate";
+import { DraftChange, gateDraftWrite, ThreadSnapshot } from "../shared/draftGate";
 import { draftForeignError } from "../shared/japaneseHan";
 import { sanitizeMailHtml } from "../shared/mailHtml";
 import { fitContext } from "../shared/context";
@@ -159,7 +159,7 @@ async function applyDraft(
   if (!gate.ok) return `エラー: ${gate.error}`;
   let toWrite = draft;
   let headerApproved = false;
-  if (draft.subject.trim() || draft.to !== undefined || draft.cc !== undefined) {
+  if (draft.subject.trim() || draft.to !== undefined || draft.cc !== undefined || draft.bcc !== undefined) {
     if (!input.readThread) return "エラー: 件名または宛先を確認できません。";
     let thread: ThreadSnapshot;
     try {
@@ -167,16 +167,11 @@ async function applyDraft(
     } catch (error) {
       return `エラー: ${error instanceof Error ? error.message : "宛先を確認できません。"}`;
     }
-    const review = reviewDraftChange(draft, thread);
-    if (!review.ok) return `エラー: ${review.error}`;
-    toWrite = { ...review.draft, bodyHtml: draft.bodyHtml, citations: draft.citations };
-    if (review.changes.length) {
-      if (!input.confirmDraft) return "エラー: 件名または宛先の変更は確認できません。";
-      const approved = await input.confirmDraft(review.changes);
-      input.signal.throwIfAborted();
-      if (!approved) return "エラー: 件名または宛先の変更はキャンセルされました。本文は書いていません。";
-      headerApproved = true;
-    }
+    const gated = await gateDraftWrite(draft, thread, input.confirmDraft);
+    input.signal.throwIfAborted();
+    if (!gated.ok) return `エラー: ${gated.error}`;
+    toWrite = { ...gated.draft, bodyHtml: draft.bodyHtml, citations: draft.citations };
+    headerApproved = gated.headerApproved;
   }
   return writeDraft(toWrite, mailFontStamp(input.settings), { headerApproved });
 }

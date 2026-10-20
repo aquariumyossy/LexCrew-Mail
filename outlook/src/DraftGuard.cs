@@ -1,10 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 
 namespace KuruOutlook
 {
     public static class DraftGuard
     {
+        static readonly Regex Mailbox = new Regex(
+            @"^[a-z0-9](?:[a-z0-9._%+\-]{0,62}[a-z0-9])?@[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?)+$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         public static string RefuseHeaderChange(
             bool headerApproved,
             string currentSubject,
@@ -13,29 +18,49 @@ namespace KuruOutlook
             string[] proposedTo,
             string[] currentCc,
             string[] proposedCc,
+            string[] currentBcc,
+            string[] proposedBcc,
             string[] allowed)
         {
-            if (proposedTo != null)
-            {
-                string outsider = FirstOutsider(proposedTo, allowed);
-                if (outsider != null) return "エラー: スレッドの参加者以外の宛先です。" + outsider;
-            }
-            if (proposedCc != null)
-            {
-                string outsider = FirstOutsider(proposedCc, allowed);
-                if (outsider != null) return "エラー: スレッドの参加者以外の宛先です。" + outsider;
-            }
+            string malformed = FirstMalformed(proposedTo) ?? FirstMalformed(proposedCc) ?? FirstMalformed(proposedBcc);
+            if (malformed != null) return "エラー: 宛先の形式が不正です。" + malformed;
             string nextSubject = proposedSubject == null ? null : MailHtml.StripMarks(proposedSubject).Trim();
             string nowSubject = MailHtml.StripMarks(currentSubject).Trim();
             bool subjectChanges = nextSubject != null && nextSubject.Length > 0
                 && !string.Equals(nowSubject, nextSubject, StringComparison.Ordinal);
             bool toChanges = proposedTo != null && !SameAddresses(proposedTo, currentTo);
             bool ccChanges = proposedCc != null && !SameAddresses(proposedCc, currentCc);
-            if ((subjectChanges || toChanges || ccChanges) && !headerApproved)
+            bool bccChanges = proposedBcc != null && !SameAddresses(proposedBcc, currentBcc);
+            if ((subjectChanges || toChanges || ccChanges || bccChanges) && !headerApproved)
             {
                 return "エラー: 件名または宛先の変更は、作業ウィンドウでの確認が必要です。";
             }
             return null;
+        }
+
+        public static string FirstMalformed(string[] proposed)
+        {
+            if (proposed == null) return null;
+            for (int i = 0; i < proposed.Length; i++)
+            {
+                string raw = proposed[i] ?? "";
+                string[] pieces = raw.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries);
+                if (pieces.Length == 0 && raw.Trim().Length > 0) pieces = new[] { raw };
+                for (int p = 0; p < pieces.Length; p++)
+                {
+                    string piece = MailHtml.StripMarks(pieces[p]).Trim();
+                    if (piece.Length == 0) continue;
+                    if (!IsMailbox(piece)) return piece;
+                }
+            }
+            return null;
+        }
+
+        public static bool IsMailbox(string value)
+        {
+            string smtp = MailParty.Smtp(MailHtml.StripMarks(value ?? ""));
+            if (smtp.Length == 0 || smtp.Length > 254) return false;
+            return Mailbox.IsMatch(smtp);
         }
 
         public static string FirstOutsider(string[] proposed, string[] allowed)

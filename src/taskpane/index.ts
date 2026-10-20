@@ -31,7 +31,7 @@ import {
 } from "../shared/attachedFiles";
 import { plainHttpLanWarning } from "../shared/endpoint";
 import { connectionNotice, llmConfigured } from "./connectionState";
-import { DraftChange, ThreadSnapshot } from "../shared/draftGate";
+import { DraftChange, renderDraftConfirm, ThreadSnapshot } from "../shared/draftGate";
 import { REMOTE_OCR_NOTICE } from "../shared/ocr";
 import { THINKING_LEVELS, THINKING_LEVEL_LABELS } from "../shared/thinking";
 import { MAIL_FONTS, MAIL_FONT_SIZE_MAX, MAIL_FONT_SIZE_MIN, MAIL_FONT_SIZE_STEP, mailFontSizeFromInput, normalizeMailFontId } from "../shared/mailFont";
@@ -313,22 +313,35 @@ export function mount(root: HTMLElement): void {
       from: header?.from ?? "",
       to: header?.to ?? [],
       cc: header?.cc ?? [],
+      bcc: header?.bcc ?? [],
       parties: readParties(),
     };
   }
 
-  const fieldLabel: Record<DraftChange["field"], string> = { subject: "件名", to: "宛先", cc: "CC" };
-
   function askDraft(changes: DraftChange[]): Promise<boolean> {
+    const view = renderDraftConfirm(changes);
     return askConfirm((finish) => {
       const box = el("div");
       box.className = "confirm";
+      if (view.warning) {
+        const warn = el("p", view.warning);
+        warn.className = "confirm-warn";
+        box.append(warn);
+        const list = el("ul");
+        list.className = "outside-addresses";
+        for (const address of view.outside) {
+          const item = el("li", address);
+          item.className = "outside-address";
+          list.append(item);
+        }
+        box.append(list);
+      }
       box.append(el("p", "件名または宛先を変えます"));
-      for (const change of changes) {
+      for (const row of view.rows) {
         const block = el("div");
-        block.append(el("p", fieldLabel[change.field]));
-        block.append(el("p", `変更前: ${change.before}`));
-        block.append(el("p", `変更後: ${change.after}`));
+        block.append(el("p", row.label));
+        block.append(el("p", `変更前: ${row.before}`));
+        block.append(el("p", `変更後: ${row.after}`));
         box.append(block);
       }
       box.append(confirmActions(finish));
@@ -2371,6 +2384,9 @@ function css(): string {
     .lan-warn[hidden] { display: none; }
     .confirm { border: 1px solid #d0d0d0; border-radius: 6px; padding: 8px; display: flex; flex-direction: column; gap: 6px; background: #fff; }
     .confirm p { margin: 0; white-space: pre-wrap; word-break: break-word; }
+    .confirm-warn { color: #8a5a00; font-weight: 600; }
+    .outside-addresses { margin: 0; padding-left: 1.2em; }
+    .outside-address { color: #8a5a00; font-weight: 600; }
     .confirm input { border: 1px solid #d0d0d0; border-radius: 6px; padding: 4px 6px; }
     .confirm-actions { display: flex; gap: 6px; }
     .banner { display: flex; align-items: flex-start; gap: 8px; border-radius: 4px; padding: 6px 8px; font-size: 0.857rem; line-height: 16px; }

@@ -67,6 +67,7 @@ const draftParams = {
     subject: { type: "string" },
     to: { type: "array", items: { type: "string" } },
     cc: { type: "array", items: { type: "string" } },
+    bcc: { type: "array", items: { type: "string" } },
     bodyHtml: { type: "string", description: "新しい前文だけ。署名と引用は含めない" },
   },
   required: ["bodyHtml"],
@@ -87,7 +88,7 @@ export function buildTools(options: { searxng: boolean; argos: boolean }): ToolD
       function: {
         name: TOOL_APPLY_DRAFT,
         description:
-          "作成ウィンドウの件名と宛先を置き換え、本文は新しい前文だけを差し替える。閲覧中は書かない。bodyHtml は新しい前文だけ。署名と引用は含めない。宛先を変えてほしいと頼まれたとき以外は、to と cc を省略する。省略するとその欄は残る。空の配列を渡すとその欄を空にする。to と cc は今のスレッドの参加者だけ。件名、宛先、CC を変えるときは利用者が確認するまで書き込まれない。",
+          "作成ウィンドウの件名と宛先を置き換え、本文は新しい前文だけを差し替える。閲覧中は書かない。bodyHtml は新しい前文だけ。署名と引用は含めない。宛先を変えてほしいと頼まれたとき以外は、to と cc と bcc を省略する。省略するとその欄は残る。空の配列を渡すとその欄を空にする。スレッドに無いアドレスも to、cc、bcc に書いてよい。形式が不正なアドレスは書かない。件名、宛先、CC、BCC を変えるときは利用者が確認するまで書き込まれない。スレッド外は作業ウィンドウが警告する。",
         parameters: draftParams,
       },
     },
