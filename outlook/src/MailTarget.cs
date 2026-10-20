@@ -68,6 +68,11 @@ namespace KuruOutlook
             window.Selection = null;
         }
 
+        public void Activate(string id)
+        {
+            // Close is final. A later Activate on that inspector must not restore its item.
+        }
+
         public ResolvedHost Context(string id)
         {
             HostWindow window;
@@ -99,6 +104,23 @@ namespace KuruOutlook
         /// <summary>
         /// Inspector pop-outs use only CurrentItem. Explorer selection is never a substitute.
         /// </summary>
+        /// <summary>
+        /// A pane still showing another live inspector must stay on that window.
+        /// A closed pane, a dead host, or the same window may be claimed.
+        /// </summary>
+        public static bool MayRetarget(bool closed, bool hostAlive, bool sameWindow)
+        {
+            if (sameWindow)
+            {
+                return true;
+            }
+            if (closed || !hostAlive)
+            {
+                return true;
+            }
+            return false;
+        }
+
         public static ItemSource Choose(WindowClass kind, bool alive, bool hasCurrent, bool hasInline, bool hasSelection)
         {
             if (!alive || kind == WindowClass.Unknown)

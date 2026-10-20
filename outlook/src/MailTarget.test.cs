@@ -12,6 +12,9 @@ class MailTargetTest
         Expect(MailTarget.ConversationId("", ""), "");
         InspectorIgnoresExplorerSelection();
         ClosedInspectorIsForgotten();
+        ActivateDoesNotRevive();
+        SecondPopOutIsNotClaimed();
+        ExplorerInlineBeatsSelection();
         return 0;
     }
 
@@ -62,6 +65,47 @@ class MailTargetTest
         Expect(open.EntryId, "entry-b");
         Expect(open.ConversationId, "conv-b");
         Expect(open.EntryId == "entry-a", false);
+    }
+
+    static void ActivateDoesNotRevive()
+    {
+        var hosts = new PaneHosts();
+        hosts.Open("A", new HostWindow
+        {
+            Kind = WindowClass.Inspector,
+            Alive = true,
+            Current = Item("entry-a", "conv-a")
+        });
+        hosts.Close("A");
+        hosts.Activate("A");
+        ResolvedHost closed = hosts.Context("A");
+        Expect(closed.Ok, false);
+        Expect(closed.EntryId, "");
+        Expect(closed.ConversationId, "");
+    }
+
+    static void SecondPopOutIsNotClaimed()
+    {
+        Expect(MailTarget.MayRetarget(false, true, false), false);
+        Expect(MailTarget.MayRetarget(true, true, false), true);
+        Expect(MailTarget.MayRetarget(false, false, false), true);
+        Expect(MailTarget.MayRetarget(false, true, true), true);
+    }
+
+    static void ExplorerInlineBeatsSelection()
+    {
+        var window = new HostWindow
+        {
+            Kind = WindowClass.Explorer,
+            Alive = true,
+            Inline = Item("entry-reply", "conv-b"),
+            Selection = Item("entry-a", "conv-a")
+        };
+        ResolvedHost resolved = MailTarget.Resolve(window);
+        Expect(resolved.Ok, true);
+        Expect(resolved.Source, ItemSource.Inline);
+        Expect(resolved.EntryId, "entry-reply");
+        Expect(resolved.ConversationId, "conv-b");
     }
 
     static HostItem Item(string entryId, string conversationId)

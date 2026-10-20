@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBuildStamp, releaseIdentity, sidecarBuildStamp, staleBuildWarning } from "./buildStamp";
+import { formatBuildStamp, healthBuildReport, releaseIdentity, sidecarBuildStamp, staleBuildWarning } from "./buildStamp";
 
 describe("build stamp", () => {
   it("shows the version with the commit and the build time", () => {
@@ -49,5 +49,14 @@ describe("build stamp", () => {
     expect(sidecarBuildStamp({ ok: true, service: "LexCrew Mail" })).toBeNull();
     expect(staleBuildWarning("1.0.7 (6e84904, 2026-10-20 12:03)", null, true)).toContain("確認できません");
     expect(staleBuildWarning("1.0.7 (dev, dev)", null, false)).toBeNull();
+  });
+
+  it("treats a health response without a stamp as a reachable old sidecar", () => {
+    expect(healthBuildReport(404, { error: "not found" })).toEqual({ reachable: true, build: null });
+    expect(healthBuildReport(200, { ok: true })).toEqual({ reachable: true, build: null });
+    expect(healthBuildReport(200, { ok: true, build: "1.0.7 (6e84904, 2026-10-20 12:03)" }).build).toBe(
+      "1.0.7 (6e84904, 2026-10-20 12:03)"
+    );
+    expect(healthBuildReport(401, { error: "認証が必要です。" })).toEqual({ reachable: false, build: null });
   });
 });

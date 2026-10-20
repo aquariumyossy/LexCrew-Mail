@@ -169,7 +169,7 @@ namespace KuruOutlook
                     return "{\"messages\":[],\"error\":\"" + Json(NoItem(window)) + "\"}";
                 }
                 var messages = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
-                CollectConversation(item, messages, MailTarget.Classify(window) == WindowClass.Explorer);
+                CollectConversation(item, messages, MailTarget.Classify(window) == WindowClass.Explorer ? window : null);
                 string source = QuotedHeaders.Clip(
                     SafeString(() => Convert.ToString(item.HTMLBody)) + "\n" + SafeString(() => Convert.ToString(item.Body)));
                 return new JavaScriptSerializer().Serialize(new System.Collections.Generic.Dictionary<string, object>
@@ -1204,7 +1204,7 @@ namespace KuruOutlook
 
         const int ConversationLimit = 400;
 
-        static void CollectConversation(dynamic item, System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages, bool allowExplorerSibling)
+        static void CollectConversation(dynamic item, System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages, object explorerWindow)
         {
             var seen = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
             string openId = SafeString(() => Convert.ToString(item.EntryID));
@@ -1251,11 +1251,11 @@ namespace KuruOutlook
             catch
             {
             }
-            if (allowExplorerSibling && messages.Count == beforeSiblings)
+            if (explorerWindow != null && messages.Count == beforeSiblings)
             {
                 try
                 {
-                    CollectSelectionSibling(item, messages, seen);
+                    CollectSelectionSibling(item, explorerWindow, messages, seen);
                 }
                 catch
                 {
@@ -1288,6 +1288,7 @@ namespace KuruOutlook
 
         static void CollectSelectionSibling(
             dynamic item,
+            object explorerWindow,
             System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages,
             System.Collections.Generic.HashSet<string> seen)
         {
@@ -1296,23 +1297,10 @@ namespace KuruOutlook
             {
                 return;
             }
-            dynamic explorer = null;
-            try
-            {
-                explorer = item.Application.ActiveExplorer();
-            }
-            catch
-            {
-                return;
-            }
-            if (explorer == null)
-            {
-                return;
-            }
             dynamic selection = null;
             try
             {
-                selection = explorer.Selection;
+                selection = ((dynamic)explorerWindow).Selection;
             }
             catch
             {

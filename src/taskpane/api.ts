@@ -16,7 +16,7 @@ import { normalizeMaxToolRounds, ToolCall, ToolDefinition } from "../shared/tool
 import { normalizeThinkingBudget, normalizeThinkingLevel, ThinkingLevel } from "../shared/thinking";
 import { MailFontId, normalizeMailFontId, normalizeMailFontSizePt } from "../shared/mailFont";
 import { Memory, PersonNote, WritingNote } from "../shared/memory";
-import { sidecarBuildStamp } from "../shared/buildStamp";
+import { healthBuildReport } from "../shared/buildStamp";
 import { applyAdopt, ConnectionFields, ConnectionView, settingsForStorage } from "./connectionState";
 
 export type StoredChatMessage = {
@@ -402,9 +402,13 @@ export type HealthReport = {
 };
 
 export async function fetchSidecarBuild(): Promise<{ reachable: boolean; build: string | null }> {
-  const res = await apiFetch("/api/health");
-  if (!res.ok) return { reachable: false, build: null };
-  return { reachable: true, build: sidecarBuildStamp(await res.json()) };
+  try {
+    const res = await apiFetch("/api/health");
+    const body = res.status === 401 ? null : await res.json().catch(() => null);
+    return healthBuildReport(res.status, body);
+  } catch {
+    return { reachable: false, build: null };
+  }
 }
 
 export async function checkHealth(settings: Settings): Promise<HealthReport> {

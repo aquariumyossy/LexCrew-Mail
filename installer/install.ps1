@@ -72,13 +72,28 @@ if (-not $webview) {
 
 $node = Join-Path $target "node\node.exe"
 $tray = Join-Path $target "KuruTray.exe"
-Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
-  Where-Object { $_.ExecutablePath -eq $node } |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-Get-Process KuruTray -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
-$deadline = (Get-Date).AddSeconds(5)
-while ((Get-Process KuruTray -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
-  Start-Sleep -Milliseconds 200
+function Stop-Owned([string]$name, [string]$expected) {
+  if (-not $expected) { return }
+  Get-CimInstance Win32_Process -Filter "Name = '$name'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -eq $expected } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+function Wait-Owned([string]$name, [string]$expected) {
+  $deadline = (Get-Date).AddSeconds(5)
+  while ((Get-Date) -lt $deadline) {
+    $left = @(Get-CimInstance Win32_Process -Filter "Name = '$name'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.ExecutablePath -eq $expected })
+    if ($left.Count -eq 0) { return $true }
+    Start-Sleep -Milliseconds 200
+  }
+  $left = @(Get-CimInstance Win32_Process -Filter "Name = '$name'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -eq $expected })
+  return $left.Count -eq 0
+}
+Stop-Owned "node.exe" $node
+Stop-Owned "KuruTray.exe" $tray
+if (-not (Wait-Owned "node.exe" $node) -or -not (Wait-Owned "KuruTray.exe" $tray)) {
+  Fail "LexCrew Mail を終了できませんでした。タスクバーの LexCrew Mail を終了してから、もう一度インストールしてください。" 9
 }
 
 try {

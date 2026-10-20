@@ -237,7 +237,6 @@ namespace KuruOutlook
         static KuruPane _latestInspector;
         static readonly Guid InspectorEvents = new Guid("0006307D-0000-0000-C000-000000000046");
         const int InspectorClose = 0xF008;
-        const int InspectorActivate = 0xF001;
         const string HostScript =
             "window.kuru={getContext:function(){return chrome.webview.hostObjects.sync.bridge.GetContext();}," +
             "readItem:function(){return chrome.webview.hostObjects.sync.bridge.ReadItem();}," +
@@ -253,7 +252,6 @@ namespace KuruOutlook
         object _ctp;
         object _watched;
         Action _onClose;
-        Action _onActivate;
         long _key;
         bool _closed;
         readonly WebView2 _web = new WebView2();
@@ -275,11 +273,32 @@ namespace KuruOutlook
         {
             KuruPane pane = _constructed ?? ControlOf(ctp);
             _constructed = null;
-            if (pane == null && MailTarget.Classify(window) == WindowClass.Inspector)
+            if (pane == null && MailTarget.Classify(window) == WindowClass.Inspector && MayClaim(_latestInspector, key))
             {
                 pane = _latestInspector;
             }
             if (pane != null) pane.Bind(ctp, window, key);
+        }
+
+        static bool MayClaim(KuruPane pane, long key)
+        {
+            if (pane == null) return false;
+            bool same = false;
+            bool hostAlive = false;
+            if (pane._host != null)
+            {
+                try
+                {
+                    long hostKey = WindowKey(pane._host);
+                    same = hostKey != 0 && hostKey == key;
+                }
+                catch (Exception)
+                {
+                    same = false;
+                }
+                hostAlive = MailTarget.Classify(pane._host) != WindowClass.Unknown;
+            }
+            return MailTarget.MayRetarget(pane._closed, hostAlive, same);
         }
 
         static KuruPane ControlOf(object ctp)
@@ -343,18 +362,22 @@ namespace KuruOutlook
             if (window == null || MailTarget.Classify(window) != WindowClass.Inspector) return;
             _watched = window;
             _onClose = OnHostClosed;
-            _onActivate = OnHostActivated;
             try
             {
                 ComEventsHelper.Combine(_watched, InspectorEvents, InspectorClose, _onClose);
-                ComEventsHelper.Combine(_watched, InspectorEvents, InspectorActivate, _onActivate);
             }
             catch (Exception ex)
             {
                 Log(ex.Message);
+                try
+                {
+                    ComEventsHelper.Remove(_watched, InspectorEvents, InspectorClose, _onClose);
+                }
+                catch (Exception)
+                {
+                }
                 _watched = null;
                 _onClose = null;
-                _onActivate = null;
             }
         }
 
@@ -370,19 +393,8 @@ namespace KuruOutlook
                 {
                 }
             }
-            if (_watched != null && _onActivate != null)
-            {
-                try
-                {
-                    ComEventsHelper.Remove(_watched, InspectorEvents, InspectorActivate, _onActivate);
-                }
-                catch (Exception)
-                {
-                }
-            }
             _watched = null;
             _onClose = null;
-            _onActivate = null;
         }
 
         void OnHostClosed()
@@ -407,24 +419,6 @@ namespace KuruOutlook
             {
                 Log(ex.Message);
             }
-        }
-
-        void OnHostActivated()
-        {
-            if (!_closed) return;
-            _closed = false;
-            if (_host == null && _ctp != null)
-            {
-                try
-                {
-                    _host = ((dynamic)_ctp).Window;
-                }
-                catch (Exception)
-                {
-                    _host = null;
-                }
-            }
-            if (_web.CoreWebView2 != null) NavigateFresh();
         }
 
         async void OnLoad(object sender, EventArgs e)

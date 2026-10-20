@@ -35,10 +35,23 @@ if ($packageBitness -eq "x86") {
 } else {
   $regasm = Join-Path ${env:WINDIR} "Microsoft.NET\Framework64\v4.0.30319\RegAsm.exe"
 }
-Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
-  Where-Object { $_.ExecutablePath -eq $node } |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-Get-Process KuruTray -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+function Stop-Owned([string]$name, [string]$expected) {
+  if (-not $expected) { return }
+  Get-CimInstance Win32_Process -Filter "Name = '$name'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -eq $expected } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+Stop-Owned "node.exe" $node
+Stop-Owned "KuruTray.exe" $tray
+$deadline = (Get-Date).AddSeconds(5)
+while ((Get-Date) -lt $deadline) {
+  $left = @(
+    @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -eq $node }) +
+    @(Get-CimInstance Win32_Process -Filter "Name = 'KuruTray.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -eq $tray })
+  )
+  if ($left.Count -eq 0) { break }
+  Start-Sleep -Milliseconds 200
+}
 if ((Test-Path $regasm) -and (Test-Path $dll)) {
   cmd /c "`"$regasm`" /unregister `"$dll`" >nul 2>&1"
 }

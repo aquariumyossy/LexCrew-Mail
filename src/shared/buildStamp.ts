@@ -46,6 +46,13 @@ export function currentBuildStamp(): BuildStamp {
   };
 }
 
+/** A non-401 HTTP response is a sidecar we could reach. Missing build means it is older than this pane. */
+export function healthBuildReport(status: number, body: unknown): { reachable: boolean; build: string | null } {
+  if (status === 401) return { reachable: false, build: null };
+  if (status < 200 || status >= 300) return { reachable: true, build: null };
+  return { reachable: true, build: sidecarBuildStamp(body) };
+}
+
 export function sidecarBuildStamp(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const build = (payload as { build?: unknown }).build;
