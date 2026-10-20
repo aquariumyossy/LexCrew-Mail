@@ -37,10 +37,11 @@ import { THINKING_LEVELS, THINKING_LEVEL_LABELS } from "../shared/thinking";
 import { MAIL_FONTS, MAIL_FONT_SIZE_MAX, MAIL_FONT_SIZE_MIN, MAIL_FONT_SIZE_STEP, mailFontSizeFromInput, normalizeMailFontId } from "../shared/mailFont";
 import { countOutgoingTokens } from "../shared/meter";
 import { Memory, Party, renderMemorySection } from "../shared/memory";
+import { currentBuildStamp, formatBuildStamp, staleBuildWarning } from "../shared/buildStamp";
 import { renderMailData, renderMailRules, systemPrompt } from "../shared/prompts";
-import { ScopeRow, Settings, TextSetting, UiFontSize, adoptStoredConnection, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
+import { ScopeRow, Settings, TextSetting, UiFontSize, adoptStoredConnection, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, fetchSidecarBuild, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
 import { badgeLabel, ingestBytes, ingestFile, ocrScan, readErrorMessage } from "./files/attach";
-import { conversationKey, currentHostMode, listMailFiles, openItemId, openThreadKey, outlookReady, readConversation, readMailFile, readMailHeader, readParties } from "./host";
+import { conversationKey, currentHostMode, HOST_ITEM_UNKNOWN, listMailFiles, openItemId, openThreadKey, outlookReady, readConversation, readHostContext, readMailFile, readMailHeader, readParties } from "./host";
 import { HeldMailFile, MAIL_ATTACH_HINT, MailAttachPlan, mailChipNote, planMailAttach } from "./mailAttach";
 import { collectFreeSlots } from "./slots";
 import { renderMarkdown } from "./markdown";
@@ -94,6 +95,7 @@ export function mount(root: HTMLElement): void {
   let freshConversation = false;
   let shownKey = "";
   let shownItemId = "";
+  let hostUnresolved = false;
   let viewEpoch = 0;
   let threadSync: Promise<void> | null = null;
   let threadBanner = false;
@@ -148,13 +150,16 @@ export function mount(root: HTMLElement): void {
   const lanWarn = el("p");
   lanWarn.className = "lan-warn";
   lanWarn.hidden = true;
+  const buildWarn = el("p");
+  buildWarn.className = "lan-warn";
+  buildWarn.hidden = true;
   const bannerHost = el("div");
   const confirmHost = el("div");
   confirmHost.hidden = true;
   const chat = el("div");
   chat.className = "chat";
   const composer = buildComposer();
-  app.append(header, lanWarn, bannerHost, confirmHost, chat, composer.box);
+  app.append(header, lanWarn, buildWarn, bannerHost, confirmHost, chat, composer.box);
   root.append(app);
 
   const dialog = buildDialog(root);
@@ -261,6 +266,7 @@ export function mount(root: HTMLElement): void {
       })
       .catch(() => {});
     void runHealth();
+    void checkBuild();
     void syncThread();
     setInterval(() => syncThread(), 1000);
   }
@@ -657,9 +663,11 @@ export function mount(root: HTMLElement): void {
 
   function openMessageError(): string | null {
     try {
-      const mode = currentHostMode();
+      const context = readHostContext();
+      if (context.error === HOST_ITEM_UNKNOWN) return context.error;
+      const mode = context.mode || currentHostMode();
       if (mode === "read" || mode === "compose") return null;
-      if (mode === "none") return "メールが選択されていません。";
+      if (mode === "none") return context.error || "メールが選択されていません。";
       return "予定は本文を書きません。";
     } catch (error) {
       return error instanceof Error ? error.message : "メールが選択されていません。";
@@ -1158,9 +1166,22 @@ export function mount(root: HTMLElement): void {
     return input;
   }
 
+  async function checkBuild(): Promise<void> {
+    try {
+      const sidecar = await fetchSidecarBuild();
+      const warning = staleBuildWarning(formatBuildStamp(currentBuildStamp()), sidecar.build, sidecar.reachable);
+      buildWarn.hidden = !warning;
+      buildWarn.textContent = warning ?? "";
+    } catch {
+      buildWarn.hidden = true;
+    }
+  }
+
   function openInfo(): void {
     const stack = el("div");
     stack.className = "stack";
+    stack.append(aboutHeading("ビルド"));
+    stack.append(note(formatBuildStamp(currentBuildStamp())));
     stack.append(aboutHeading("概要"));
     for (const paragraph of aboutCopy.overview) stack.append(note(paragraph));
     stack.append(aboutHeading("機能"));
@@ -1468,12 +1489,32 @@ export function mount(root: HTMLElement): void {
     if (!outlookReady() || document.visibilityState === "hidden") return;
     let observed = "";
     let itemId = "";
+    let hostError = "";
     try {
-      observed = openThreadKey();
-      itemId = openItemId();
+      const context = readHostContext();
+      observed = context.conversationId;
+      itemId = context.itemId;
+      hostError = context.error;
     } catch {
       return;
     }
+    if (hostError === HOST_ITEM_UNKNOWN) {
+      if (!hostUnresolved) {
+        hostUnresolved = true;
+        isolateView();
+        dropFiles();
+        conversationId = "";
+        freshConversation = true;
+        filesFor = "";
+        thread.splice(0, thread.length);
+        shownItemId = "";
+        shownKey = "";
+        banner = { kind: "error", text: hostError };
+        paint();
+      }
+      return;
+    }
+    hostUnresolved = false;
     if (itemId && itemId !== shownItemId) {
       const keepTranscript = transcriptSurvivesItemSwitch(shownKey, observed);
       isolateView();

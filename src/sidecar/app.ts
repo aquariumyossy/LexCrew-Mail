@@ -13,6 +13,7 @@ import { searxngSearch } from "./search";
 import { appointmentsFromIcs, fetchGoogleIcs } from "./ical";
 import { parseLocal } from "../shared/freeSlots";
 import { adoptConnection, connectionFromBody, connectionPath, Connection, ConnectionFile, readConnection, resolveConnection, saveConnection, sweepConnectionTemps } from "./connection";
+import { currentBuildStamp, formatBuildStamp } from "../shared/buildStamp";
 import { newSessionToken, SESSION_TOKEN_HEADER, tokenMatches } from "./sessionAuth";
 
 function clientSignal(res: Response, timeoutMs: number): { signal: AbortSignal; timedOut: () => boolean } {
@@ -104,7 +105,7 @@ export function createApp(options?: { token?: string }): Express {
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/api/health", (_req, res) => {
-    res.json({ ok: true, service: "LexCrew Mail" });
+    res.json({ ok: true, service: "LexCrew Mail", build: formatBuildStamp(currentBuildStamp()) });
   });
 
   app.get("/api/connection", (_req, res) => {

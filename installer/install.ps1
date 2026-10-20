@@ -76,11 +76,15 @@ Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyC
   Where-Object { $_.ExecutablePath -eq $node } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Get-Process KuruTray -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+$deadline = (Get-Date).AddSeconds(5)
+while ((Get-Process KuruTray -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
+  Start-Sleep -Milliseconds 200
+}
 
 try {
   if (Test-Path $target) { Remove-Item $target -Recurse -Force }
   New-Item -ItemType Directory -Force -Path $target | Out-Null
-  $names = @("addin", "app", "node", "KuruTray.exe", "version.txt", "uninstall.ps1", "uninstall.cmd")
+  $names = @("addin", "app", "node", "KuruTray.exe", "version.txt", "build.txt", "uninstall.ps1", "uninstall.cmd")
   if (Test-Path (Join-Path $source "lexcrew.ico")) { $names += "lexcrew.ico" }
   foreach ($name in $names) {
     Copy-Item (Join-Path $source $name) $target -Recurse -Force
@@ -160,7 +164,7 @@ if (-not $NonInteractive) {
 $run = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 New-ItemProperty -Path $run -Name "LexCrew Mail" -Value "`"$tray`"" -PropertyType String -Force | Out-Null
 Remove-ItemProperty -Path $run -Name "KURU" -ErrorAction SilentlyContinue
-if (-not $NonInteractive) { Start-Process $tray -WindowStyle Hidden }
+if (Test-Path $tray) { Start-Process $tray -WindowStyle Hidden }
 
 Write-Host ""
 Write-Host "インストールしました。" -ForegroundColor Green

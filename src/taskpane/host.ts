@@ -37,12 +37,25 @@ export function currentHostMode(): HostMode {
   return parsed.mode ?? "none";
 }
 
-function readContext(): { conversationId: string; itemId: string } {
-  const parsed = JSON.parse(bridge().getContext()) as { conversationId?: unknown; itemId?: unknown };
+export const HOST_ITEM_UNKNOWN = "このウィンドウのメールを特定できません。";
+
+export function readHostContext(): { conversationId: string; itemId: string; error: string; mode: string } {
+  const parsed = JSON.parse(bridge().getContext()) as {
+    conversationId?: unknown;
+    itemId?: unknown;
+    error?: unknown;
+    mode?: unknown;
+  };
   return {
     conversationId: typeof parsed.conversationId === "string" ? parsed.conversationId : "",
     itemId: typeof parsed.itemId === "string" ? parsed.itemId : "",
+    error: typeof parsed.error === "string" ? parsed.error : "",
+    mode: typeof parsed.mode === "string" ? parsed.mode : "",
   };
+}
+
+function readContext(): { conversationId: string; itemId: string; error: string; mode: string } {
+  return readHostContext();
 }
 
 export function openThreadKey(): string {

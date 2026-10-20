@@ -16,6 +16,7 @@ import { normalizeMaxToolRounds, ToolCall, ToolDefinition } from "../shared/tool
 import { normalizeThinkingBudget, normalizeThinkingLevel, ThinkingLevel } from "../shared/thinking";
 import { MailFontId, normalizeMailFontId, normalizeMailFontSizePt } from "../shared/mailFont";
 import { Memory, PersonNote, WritingNote } from "../shared/memory";
+import { sidecarBuildStamp } from "../shared/buildStamp";
 import { applyAdopt, ConnectionFields, ConnectionView, settingsForStorage } from "./connectionState";
 
 export type StoredChatMessage = {
@@ -399,6 +400,12 @@ export type HealthReport = {
   searxng?: { ok: boolean; error?: string };
   argos?: { ok: boolean; error?: string };
 };
+
+export async function fetchSidecarBuild(): Promise<{ reachable: boolean; build: string | null }> {
+  const res = await apiFetch("/api/health");
+  if (!res.ok) return { reachable: false, build: null };
+  return { reachable: true, build: sidecarBuildStamp(await res.json()) };
+}
 
 export async function checkHealth(settings: Settings): Promise<HealthReport> {
   const res = await apiFetch("/api/health", {

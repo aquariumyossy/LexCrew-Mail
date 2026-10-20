@@ -10,16 +10,48 @@ Set-Location $root
 $version = (Get-Content package.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
 $release = Join-Path $root "release"
 $stage = Join-Path $release "KURU"
-$archTag = ""
 $dllPlatform = "x64"
 $loaderRid = "win-x64"
 if ($Platform -eq "x86") {
-  $archTag = "-x86"
   $dllPlatform = "x86"
   $loaderRid = "win-x86"
 }
-$zip = Join-Path $release "LexCrew-Mail$archTag-$version.zip"
-$setup = Join-Path $release "LexCrew-Mail-Setup$archTag-$version.exe"
+$commit = "dev"
+try {
+  $commit = (& git -C $root rev-parse --short=7 HEAD).Trim()
+} catch {
+  $commit = "dev"
+}
+if ([string]::IsNullOrWhiteSpace($commit)) { $commit = "dev" }
+$dirty = $false
+try {
+  $porcelain = & git -C $root status --porcelain
+  if ($porcelain) { $dirty = $true }
+} catch {
+  $dirty = $false
+}
+$now = Get-Date
+$builtAt = $now.ToString("yyyy-MM-dd HH:mm")
+$fileTime = $now.ToString("yyyyMMdd-HHmm")
+$env:KURU_VERSION = $version
+$env:KURU_COMMIT = $commit
+$env:KURU_DIRTY = $(if ($dirty) { "1" } else { "0" })
+$env:KURU_BUILT_AT = $builtAt
+$env:KURU_FILE_TIME = $fileTime
+$env:KURU_ARCH = $Platform
+$identityLines = & npx tsx scripts/print-release-identity.ts
+$identityCode = $LASTEXITCODE
+$identityJson = @($identityLines) | Where-Object { $_ -match '^\{' } | Select-Object -Last 1
+if ($identityCode -ne 0 -or -not $identityJson) { throw "release identity failed ($identityCode)" }
+$identity = $identityJson | ConvertFrom-Json
+$stamp = [string]$identity.stamp
+$commit = [string]$identity.commit
+$env:KURU_COMMIT = $commit
+$zip = Join-Path $release ([string]$identity.zip)
+$setup = Join-Path $release ([string]$identity.setup)
+function DefineValue([string]$name, [string]$value) {
+  return "--define:${name}=$($value | ConvertTo-Json -Compress)"
+}
 $framework = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319"
 $webview = Join-Path $root "outlook\packages\Microsoft.Web.WebView2.1.0.2903.40"
 $loader = Join-Path $webview "runtimes\$loaderRid\native\WebView2Loader.dll"
@@ -62,8 +94,9 @@ Check "webpack"
 Copy-Item dist "$stage\app\dist" -Recurse
 
 Step "server (esbuild)"
-npx esbuild src/server.release.ts --bundle --platform=node --target=node22 --external:better-sqlite3 --outfile="$stage\app\server.js" --log-level=warning
+npx esbuild src/server.release.ts --bundle --platform=node --target=node22 --external:better-sqlite3 --outfile="$stage\app\server.js" --log-level=warning (DefineValue "process.env.KURU_VERSION" $version) (DefineValue "process.env.KURU_COMMIT" $commit) (DefineValue "process.env.KURU_BUILT_AT" $builtAt)
 Check "esbuild"
+Set-Content -Path "$stage\build.txt" -Value $stamp -Encoding ASCII
 
 Step "native modules"
 foreach ($name in @("better-sqlite3", "bindings", "file-uri-to-path")) {
@@ -242,7 +275,7 @@ foreach ($name in @("install.ps1", "uninstall.ps1", "install.cmd", "uninstall.cm
     [IO.File]::WriteAllText((Join-Path $stage $file.Name), $text.Replace("`r`n", "`n").Replace("`n", "`r`n"), [Text.Encoding]::ASCII)
   }
 }
-Set-Content -Path "$stage\version.txt" -Value $version -Encoding ASCII
+Set-Content -Path "$stage\version.txt" -Value $stamp -Encoding ASCII
 
 $makensis = $null
 $found = Get-Command makensis -ErrorAction SilentlyContinue
@@ -258,6 +291,7 @@ $nsiText = [IO.File]::ReadAllText($nsi, [Text.Encoding]::UTF8)
 [IO.File]::WriteAllText($nsi, $nsiText, $bom)
 & $makensis /INPUTCHARSET UTF8 `
   "/DVERSION=$version" `
+  "/DDISPLAYVERSION=`"$stamp`"" `
   "/DBITNESS=$Platform" `
   "/DOUTFILE=$($setup.Replace('\','/'))" `
   "/DPAYLOAD=$($stage.Replace('\','/'))" `
@@ -272,7 +306,7 @@ New-Item -ItemType Directory -Force -Path $zipDir | Out-Null
 $setupName = Split-Path $setup -Leaf
 $outlookKind = if ($Platform -eq "x86") { "32 ビット版の Outlook" } else { "64 ビット版の Outlook" }
 Copy-Item $setup (Join-Path $zipDir (Split-Path $setup -Leaf))
-$guide = ([IO.File]::ReadAllText((Join-Path $root "scripts\install-guide.ja.txt"), [Text.Encoding]::UTF8)).Replace("{VERSION}", $version).Replace("{SETUP}", $setupName).Replace("{OUTLOOK}", $outlookKind)
+$guide = ([IO.File]::ReadAllText((Join-Path $root "scripts\install-guide.ja.txt"), [Text.Encoding]::UTF8)).Replace("{VERSION}", $stamp).Replace("{SETUP}", $setupName).Replace("{OUTLOOK}", $outlookKind)
 [IO.File]::WriteAllText((Join-Path $zipDir "INSTALL.txt"), $guide, $bom)
 Compress-Archive -Path (Join-Path $zipDir "*") -DestinationPath $zip
 Remove-Item $zipDir -Recurse -Force
@@ -308,5 +342,6 @@ if ($guideText -notlike "*$setupName*") { throw "INSTALL.txt が $setupName を�
 if ($guideText -notlike "*$outlookKind*") { throw "INSTALL.txt の動作環境が $outlookKind ではありません。" }
 
 Write-Host ""
-Write-Host "created $setup" -ForegroundColor Green
-Write-Host "created $zip" -ForegroundColor Green
+Write-Host "stamp: $stamp" -ForegroundColor Green
+Write-Host "setup: $setup" -ForegroundColor Green
+Write-Host "zip: $zip" -ForegroundColor Green

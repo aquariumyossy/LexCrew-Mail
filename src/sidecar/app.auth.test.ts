@@ -43,6 +43,14 @@ describe("sidecar session auth", () => {
     expect(body.error).toContain("認証");
   });
 
+  it("reports the build stamp on the health check", async () => {
+    const res = await fetch(`${base}/api/health`, { headers: { "X-LexCrew-Token": token } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok?: boolean; build?: string };
+    expect(body.ok).toBe(true);
+    expect(body.build).toBe("1.0.7 (dev, dev)");
+  });
+
   it("accepts the token in the header and does not return the API key", async () => {
     const res = await fetch(`${base}/api/connection`, { headers: { "X-LexCrew-Token": token } });
     expect(res.status).toBe(200);

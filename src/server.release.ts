@@ -61,7 +61,13 @@ async function main(): Promise<void> {
   app.get("/", (_req, res) => {
     res.redirect("/taskpane.html");
   });
-  app.use(express.static(staticDir, { maxAge: 0 }));
+  app.use(express.static(staticDir, {
+    etag: false,
+    lastModified: false,
+    setHeaders(res) {
+      res.setHeader("Cache-Control", "no-store");
+    },
+  }));
 
   const server = https.createServer(loadCertificate(), app);
   await new Promise<void>((resolve, reject) => {

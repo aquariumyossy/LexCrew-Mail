@@ -9,13 +9,34 @@ namespace KuruOutlook
     public class MailBridge
     {
         const string SmtpTag = "http://schemas.microsoft.com/mapi/proptag/0x39FE001F";
-        readonly object _window;
+        readonly Func<object> _windowOf;
         string _fileStamp;
         string _fileList;
 
-        public MailBridge(object window)
+        public MailBridge(object window) : this(delegate { return window; })
         {
-            _window = window;
+        }
+
+        public MailBridge(Func<object> windowOf)
+        {
+            _windowOf = windowOf ?? (delegate { return null; });
+        }
+
+        object Window()
+        {
+            try
+            {
+                return _windowOf();
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        string NoItem(object window)
+        {
+            return MailTarget.Missing(window);
         }
 
         public string GetContext()
@@ -23,11 +44,12 @@ namespace KuruOutlook
             var clock = System.Diagnostics.Stopwatch.StartNew();
             try
             {
+                object window = Window();
                 bool inspector;
-                dynamic item = MailTarget.Draft(_window, out inspector);
+                dynamic item = MailTarget.Draft(window, out inspector);
                 if (item == null)
                 {
-                    return "{\"mode\":\"none\",\"conversationId\":\"\",\"itemId\":\"\"}";
+                    return "{\"mode\":\"none\",\"conversationId\":\"\",\"itemId\":\"\",\"error\":\"" + Json(NoItem(window)) + "\"}";
                 }
                 string messageClass = Convert.ToString(item.MessageClass);
                 bool sent = SafeSent(item);
@@ -56,11 +78,12 @@ namespace KuruOutlook
         {
             try
             {
+                object window = Window();
                 bool inspector;
-                dynamic item = MailTarget.Draft(_window, out inspector);
+                dynamic item = MailTarget.Draft(window, out inspector);
                 if (item == null)
                 {
-                    return "{\"error\":\"メールが選択されていません。\"}";
+                    return "{\"error\":\"" + Json(NoItem(window)) + "\"}";
                 }
                 string messageClass = Convert.ToString(item.MessageClass);
                 string mode = MailGate.Mode(inspector, messageClass, SafeSent(item));
@@ -101,7 +124,7 @@ namespace KuruOutlook
             try
             {
                 bool inspector;
-                dynamic item = MailTarget.Draft(_window, out inspector);
+                dynamic item = MailTarget.Draft(Window(), out inspector);
                 if (item == null)
                 {
                     return "{\"ok\":false}";
@@ -138,14 +161,15 @@ namespace KuruOutlook
         {
             try
             {
+                object window = Window();
                 bool inspector;
-                dynamic item = MailTarget.Draft(_window, out inspector);
+                dynamic item = MailTarget.Draft(window, out inspector);
                 if (item == null)
                 {
-                    return "{\"messages\":[]}";
+                    return "{\"messages\":[],\"error\":\"" + Json(NoItem(window)) + "\"}";
                 }
                 var messages = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
-                CollectConversation(item, messages);
+                CollectConversation(item, messages, MailTarget.Classify(window) == WindowClass.Explorer);
                 string source = QuotedHeaders.Clip(
                     SafeString(() => Convert.ToString(item.HTMLBody)) + "\n" + SafeString(() => Convert.ToString(item.Body)));
                 return new JavaScriptSerializer().Serialize(new System.Collections.Generic.Dictionary<string, object>
@@ -165,7 +189,7 @@ namespace KuruOutlook
             try
             {
                 bool inspector;
-                dynamic item = MailTarget.Draft(_window, out inspector);
+                dynamic item = MailTarget.Draft(Window(), out inspector);
                 if (item == null)
                 {
                     return "{\"parties\":[]}";
@@ -191,11 +215,12 @@ namespace KuruOutlook
             string how = "skip";
             try
             {
+                object window = Window();
                 bool inspector;
-                dynamic item = MailTarget.Selected(_window, out inspector);
+                dynamic item = MailTarget.Selected(window, out inspector);
                 if (item == null)
                 {
-                    return "{\"error\":\"メールが選択されていません。\"}";
+                    return "{\"error\":\"" + Json(NoItem(window)) + "\"}";
                 }
                 string mode = MailGate.Mode(inspector, Convert.ToString(item.MessageClass), SafeSent(item));
                 if (mode == "none" || mode == "not-message")
@@ -290,10 +315,11 @@ namespace KuruOutlook
             string temp = "";
             try
             {
-                dynamic item = MailTarget.Selected(_window);
+                object window = Window();
+                dynamic item = MailTarget.Selected(window);
                 if (item == null)
                 {
-                    return "{\"error\":\"メールが選択されていません。\"}";
+                    return "{\"error\":\"" + Json(NoItem(window)) + "\"}";
                 }
                 dynamic attachment = item.Attachments[index];
                 temp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kuru-" + Guid.NewGuid().ToString("n"));
@@ -329,11 +355,12 @@ namespace KuruOutlook
         {
             try
             {
+                object window = Window();
                 bool inspector;
-                dynamic item = MailTarget.Draft(_window, out inspector);
+                dynamic item = MailTarget.Draft(window, out inspector);
                 if (item == null)
                 {
-                    return "エラー: メールが選択されていません。";
+                    return "エラー: " + NoItem(window);
                 }
                 string mode = MailGate.Mode(inspector, Convert.ToString(item.MessageClass), SafeSent(item));
                 if (mode != "compose")
@@ -392,7 +419,7 @@ namespace KuruOutlook
         {
             mutated = false;
             error = null;
-            dynamic editor = MailTarget.Editor(_window);
+            dynamic editor = MailTarget.Editor(Window());
             if (editor == null)
             {
                 return false;
@@ -474,7 +501,7 @@ namespace KuruOutlook
 
         public string SearchSent(string json)
         {
-            return SentLookup.Search(_window, json);
+            return SentLookup.Search(Window(), json);
         }
 
         public string ReadCalendar(string json)
@@ -489,7 +516,7 @@ namespace KuruOutlook
                 {
                     return "{\"error\":\"予定の期間が不正です。\"}";
                 }
-                dynamic app = ((dynamic)_window).Application;
+                dynamic app = ((dynamic)Window()).Application;
                 var folders = new System.Collections.Generic.List<object>();
                 CollectCalendars(app, folders);
                 if (folders.Count == 0)
@@ -1177,7 +1204,7 @@ namespace KuruOutlook
 
         const int ConversationLimit = 400;
 
-        static void CollectConversation(dynamic item, System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages)
+        static void CollectConversation(dynamic item, System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages, bool allowExplorerSibling)
         {
             var seen = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
             string openId = SafeString(() => Convert.ToString(item.EntryID));
@@ -1224,7 +1251,7 @@ namespace KuruOutlook
             catch
             {
             }
-            if (messages.Count == beforeSiblings)
+            if (allowExplorerSibling && messages.Count == beforeSiblings)
             {
                 try
                 {

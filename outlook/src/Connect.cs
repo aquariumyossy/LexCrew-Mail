@@ -24,6 +24,7 @@ namespace KuruOutlook
         public Connect()
         {
             Log("ctor");
+            KuruPane.ClosedPane += DropPane;
         }
 
         object _app;
@@ -91,7 +92,7 @@ namespace KuruOutlook
                 Log("OnKuruClick parent=" + ParentKind(parent));
                 long key = WindowKey(parent);
                 HideOtherPanes(key);
-                if (TryShowPane(key))
+                if (TryShowPane(key, parent))
                 {
                     return;
                 }
@@ -102,6 +103,7 @@ namespace KuruOutlook
                 pane.Width = 380;
                 pane.Visible = true;
                 _panes[key] = ctp;
+                KuruPane.BindCreated(ctp, parent, key);
                 Log("pane shown");
             }
             catch (Exception ex)
@@ -135,7 +137,7 @@ namespace KuruOutlook
             }
         }
 
-        bool TryShowPane(long key)
+        bool TryShowPane(long key, object window)
         {
             object existing;
             if (!_panes.TryGetValue(key, out existing))
@@ -145,7 +147,7 @@ namespace KuruOutlook
             try
             {
                 ((dynamic)existing).Visible = true;
-                KuruPane.Reload(key);
+                KuruPane.Rebind(key, existing, window);
                 Log("pane reloaded");
                 return true;
             }
@@ -229,7 +231,13 @@ namespace KuruOutlook
     public class KuruPane : UserControl
     {
         public static object PendingWindow;
+        public static event Action<long> ClosedPane;
         static readonly Dictionary<long, KuruPane> Live = new Dictionary<long, KuruPane>();
+        static KuruPane _constructed;
+        static KuruPane _latestInspector;
+        static readonly Guid InspectorEvents = new Guid("0006307D-0000-0000-C000-000000000046");
+        const int InspectorClose = 0xF008;
+        const int InspectorActivate = 0xF001;
         const string HostScript =
             "window.kuru={getContext:function(){return chrome.webview.hostObjects.sync.bridge.GetContext();}," +
             "readItem:function(){return chrome.webview.hostObjects.sync.bridge.ReadItem();}," +
@@ -241,16 +249,49 @@ namespace KuruOutlook
             "listMailFiles:function(){return chrome.webview.hostObjects.sync.bridge.ListMailFiles();}," +
             "readMailFile:function(index){return chrome.webview.hostObjects.bridge.ReadMailFile(index);}," +
             "searchSent:function(json){return chrome.webview.hostObjects.bridge.SearchSent(json);}};";
-        readonly object _window;
+        object _host;
+        object _ctp;
+        object _watched;
+        Action _onClose;
+        Action _onActivate;
+        long _key;
+        bool _closed;
         readonly WebView2 _web = new WebView2();
         bool _retryingSidecar;
         bool _scriptReady;
         int _navGate;
 
-        public static void Reload(long key)
+        public static void Rebind(long key, object ctp, object window)
         {
             KuruPane pane;
-            if (Live.TryGetValue(key, out pane)) pane.NavigateFresh();
+            if (!Live.TryGetValue(key, out pane) || pane == null)
+            {
+                pane = ControlOf(ctp);
+            }
+            if (pane != null) pane.Bind(ctp, window, key);
+        }
+
+        public static void BindCreated(object ctp, object window, long key)
+        {
+            KuruPane pane = _constructed ?? ControlOf(ctp);
+            _constructed = null;
+            if (pane == null && MailTarget.Classify(window) == WindowClass.Inspector)
+            {
+                pane = _latestInspector;
+            }
+            if (pane != null) pane.Bind(ctp, window, key);
+        }
+
+        static KuruPane ControlOf(object ctp)
+        {
+            try
+            {
+                return ((dynamic)ctp).ContentControl as KuruPane;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
         }
 
         public static void Forget(long key)
@@ -260,11 +301,130 @@ namespace KuruOutlook
 
         public KuruPane()
         {
-            _window = PendingWindow;
+            _host = PendingWindow;
             PendingWindow = null;
+            _constructed = this;
             _web.Dock = DockStyle.Fill;
             Controls.Add(_web);
             Load += OnLoad;
+        }
+
+        public void Bind(object ctp, object window, long key)
+        {
+            if (_key != 0 && _key != key) Live.Remove(_key);
+            _ctp = ctp;
+            _host = window;
+            _closed = false;
+            _key = key;
+            if (key != 0) Live[key] = this;
+            if (MailTarget.Classify(window) == WindowClass.Inspector) _latestInspector = this;
+            Watch(window);
+            if (_web.CoreWebView2 != null) NavigateFresh();
+        }
+
+        object HostWindow()
+        {
+            if (_closed) return null;
+            if (_host != null) return _host;
+            if (_ctp == null) return null;
+            try
+            {
+                return ((dynamic)_ctp).Window;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        void Watch(object window)
+        {
+            Unwatch();
+            if (window == null || MailTarget.Classify(window) != WindowClass.Inspector) return;
+            _watched = window;
+            _onClose = OnHostClosed;
+            _onActivate = OnHostActivated;
+            try
+            {
+                ComEventsHelper.Combine(_watched, InspectorEvents, InspectorClose, _onClose);
+                ComEventsHelper.Combine(_watched, InspectorEvents, InspectorActivate, _onActivate);
+            }
+            catch (Exception ex)
+            {
+                Log(ex.Message);
+                _watched = null;
+                _onClose = null;
+                _onActivate = null;
+            }
+        }
+
+        void Unwatch()
+        {
+            if (_watched != null && _onClose != null)
+            {
+                try
+                {
+                    ComEventsHelper.Remove(_watched, InspectorEvents, InspectorClose, _onClose);
+                }
+                catch (Exception)
+                {
+                }
+            }
+            if (_watched != null && _onActivate != null)
+            {
+                try
+                {
+                    ComEventsHelper.Remove(_watched, InspectorEvents, InspectorActivate, _onActivate);
+                }
+                catch (Exception)
+                {
+                }
+            }
+            _watched = null;
+            _onClose = null;
+            _onActivate = null;
+        }
+
+        void OnHostClosed()
+        {
+            if (_closed) return;
+            _closed = true;
+            _host = null;
+            long key = _key;
+            _key = 0;
+            Unwatch();
+            if (key != 0)
+            {
+                Live.Remove(key);
+                Action<long> closed = ClosedPane;
+                if (closed != null) closed(key);
+            }
+            try
+            {
+                if (_web.CoreWebView2 != null) _web.CoreWebView2.Navigate("about:blank");
+            }
+            catch (Exception ex)
+            {
+                Log(ex.Message);
+            }
+        }
+
+        void OnHostActivated()
+        {
+            if (!_closed) return;
+            _closed = false;
+            if (_host == null && _ctp != null)
+            {
+                try
+                {
+                    _host = ((dynamic)_ctp).Window;
+                }
+                catch (Exception)
+                {
+                    _host = null;
+                }
+            }
+            if (_web.CoreWebView2 != null) NavigateFresh();
         }
 
         async void OnLoad(object sender, EventArgs e)
@@ -275,7 +435,7 @@ namespace KuruOutlook
                 Directory.CreateDirectory(folder);
                 CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(null, folder);
                 await _web.EnsureCoreWebView2Async(env);
-                _web.CoreWebView2.AddHostObjectToScript("bridge", new MailBridge(_window));
+                _web.CoreWebView2.AddHostObjectToScript("bridge", new MailBridge(HostWindow));
                 BindTaskPaneGuards();
                 _web.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
                 _web.CoreWebView2.ServerCertificateErrorDetected += (s, args) =>
@@ -303,8 +463,19 @@ namespace KuruOutlook
                 {
                     Log(ex.Message);
                 }
-                long key = WindowKey(_window);
-                if (key != 0) Live[key] = this;
+                if (_key == 0)
+                {
+                    long key = WindowKey(HostWindow());
+                    if (key != 0)
+                    {
+                        _key = key;
+                        Live[key] = this;
+                    }
+                }
+                else
+                {
+                    Live[_key] = this;
+                }
                 if (!await Sidecar.Ready) Log("sidecar not ready");
                 NavigateFresh();
             }
