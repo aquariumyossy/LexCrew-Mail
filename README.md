@@ -77,7 +77,7 @@ Outlook（COM アドイン） ── window.kuru ──► 作業ウィンドウ
 
 ## インストール（利用者向け）
 
-1. 配布物の `LexCrew-Mail-Setup-1.0.2.exe` を実行する（バージョンは配布物に合わせる）
+1. 配布物の `LexCrew-Mail-Setup-<version>-<sha>-<datetime>.exe` を実行する（バージョンは配布物に合わせる）
 2. 画面の指示に従う
 3. Outlook を起動し、メールのリボンに **LexCrew** を開いて作業ウィンドウを表示する
 4. 設定で LLM の URL・API キー・モデル名を入れる

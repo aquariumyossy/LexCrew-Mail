@@ -59,7 +59,7 @@ describe("sidecar session auth", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok?: boolean; build?: string };
     expect(body.ok).toBe(true);
-    expect(body.build).toBe("1.0.7 (dev, dev)");
+    expect(body.build).toBe("1.1.0 (dev, dev)");
   });
 
   it("reports the injected stamp when KURU_* is set", async () => {

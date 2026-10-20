@@ -40,7 +40,7 @@ export function releaseIdentity(input: {
 
 export function currentBuildStamp(): BuildStamp {
   return {
-    version: readInjected(process.env.KURU_VERSION, "1.0.7"),
+    version: readInjected(process.env.KURU_VERSION, "1.1.0"),
     commit: readInjected(process.env.KURU_COMMIT, "dev"),
     builtAt: readInjected(process.env.KURU_BUILT_AT, "dev"),
   };
