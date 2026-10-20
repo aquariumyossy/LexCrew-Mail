@@ -3,12 +3,18 @@ import http from "http";
 import os from "os";
 import path from "path";
 import { AddressInfo } from "net";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Express } from "express";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kuru-auth-"));
 process.env.APPDATA = dir;
 process.env.LOCALAPPDATA = dir;
+
+const kuruEnv = ["KURU_VERSION", "KURU_COMMIT", "KURU_DIRTY", "KURU_BUILT_AT", "KURU_FILE_TIME", "KURU_ARCH"] as const;
+
+function clearBuildEnv() {
+  for (const name of kuruEnv) vi.stubEnv(name, "");
+}
 
 describe("sidecar session auth", () => {
   const token = "a".repeat(64);
@@ -36,6 +42,10 @@ describe("sidecar session auth", () => {
     await new Promise((resolve) => server.close(resolve));
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("rejects every request that does not carry the launch token", async () => {
     const res = await fetch(`${base}/api/health`);
     expect(res.status).toBe(401);
@@ -44,11 +54,22 @@ describe("sidecar session auth", () => {
   });
 
   it("reports the build stamp on the health check", async () => {
+    clearBuildEnv();
     const res = await fetch(`${base}/api/health`, { headers: { "X-LexCrew-Token": token } });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok?: boolean; build?: string };
     expect(body.ok).toBe(true);
     expect(body.build).toBe("1.0.7 (dev, dev)");
+  });
+
+  it("reports the injected stamp when KURU_* is set", async () => {
+    vi.stubEnv("KURU_VERSION", "9.9.9");
+    vi.stubEnv("KURU_COMMIT", "b5cca57-dirty");
+    vi.stubEnv("KURU_BUILT_AT", "2026-10-20 13:25");
+    const res = await fetch(`${base}/api/health`, { headers: { "X-LexCrew-Token": token } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { build?: string };
+    expect(body.build).toBe("9.9.9 (b5cca57-dirty, 2026-10-20 13:25)");
   });
 
   it("accepts the token in the header and does not return the API key", async () => {

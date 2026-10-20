@@ -52,7 +52,7 @@ try {
 if ([string]::IsNullOrWhiteSpace($commit)) { $commit = "dev" }
 $dirty = $false
 try {
-  $porcelain = & git -C $root status --porcelain
+  $porcelain = & git -C $root status --porcelain --untracked-files=no
   if ($porcelain) { $dirty = $true }
 } catch {
   $dirty = $false
@@ -80,7 +80,8 @@ $env:KURU_COMMIT = $commit
 $zip = Join-Path $release ([string]$identity.zip)
 $setup = Join-Path $release ([string]$identity.setup)
 function DefineValue([string]$name, [string]$value) {
-  return "--define:${name}=$($value | ConvertTo-Json -Compress)"
+  $escaped = $value.Replace("\", "\\").Replace("'", "\u0027")
+  return "--define:${name}='$escaped'"
 }
 $framework = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319"
 $webview = Join-Path $root "outlook\packages\Microsoft.Web.WebView2.1.0.2903.40"
@@ -115,8 +116,18 @@ if (Test-Path $setup) { Remove-Item $setup -Force }
 New-Item -ItemType Directory -Force -Path "$stage\addin", "$stage\app\node_modules", "$stage\node" | Out-Null
 
 Step "test"
+$kuruNames = @("KURU_VERSION", "KURU_COMMIT", "KURU_DIRTY", "KURU_BUILT_AT", "KURU_FILE_TIME", "KURU_ARCH")
+$savedKuru = @{}
+foreach ($name in $kuruNames) {
+  if (Test-Path "Env:$name") {
+    $savedKuru[$name] = (Get-Item "Env:$name").Value
+    Remove-Item "Env:$name"
+  }
+}
 Invoke-NodeScript -Name "vitest" -Parts @("node_modules", "vitest", "vitest.mjs") -ArgList @("run")
-Check "vitest"
+$vitestCode = $LASTEXITCODE
+foreach ($name in $savedKuru.Keys) { Set-Item -Path "Env:$name" -Value $savedKuru[$name] }
+if ($vitestCode -ne 0) { throw "vitest failed ($vitestCode)" }
 
 Step "taskpane (webpack production)"
 Invoke-NodeScript -Name "webpack" -Parts @("node_modules", "webpack", "bin", "webpack.js") -ArgList @("--mode", "production", "--devtool", "false")

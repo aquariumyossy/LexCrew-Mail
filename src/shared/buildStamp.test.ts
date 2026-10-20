@@ -1,6 +1,10 @@
 import { execFileSync } from "child_process";
-import { describe, expect, it } from "vitest";
-import { formatBuildStamp, healthBuildReport, releaseIdentity, sidecarBuildStamp, staleBuildWarning } from "./buildStamp";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { currentBuildStamp, formatBuildStamp, healthBuildReport, releaseIdentity, sidecarBuildStamp, staleBuildWarning } from "./buildStamp";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("build stamp", () => {
   it("shows the version with the commit and the build time", () => {
@@ -36,6 +40,17 @@ describe("build stamp", () => {
     expect(named.setup).toBe("LexCrew-Mail-Setup-x86-1.0.7-6e84904-dirty-20261020-1205.exe");
     expect(named.zip).toBe("LexCrew-Mail-x86-1.0.7-6e84904-dirty-20261020-1205.zip");
     expect(named.stamp).toBe("1.0.7 (6e84904-dirty, 2026-10-20 12:05)");
+  });
+
+  it("reads an injected stamp from KURU_* and falls back when those variables are blank", () => {
+    vi.stubEnv("KURU_VERSION", "9.9.9");
+    vi.stubEnv("KURU_COMMIT", "b5cca57-dirty");
+    vi.stubEnv("KURU_BUILT_AT", "2026-10-20 13:25");
+    expect(formatBuildStamp(currentBuildStamp())).toBe("9.9.9 (b5cca57-dirty, 2026-10-20 13:25)");
+    vi.stubEnv("KURU_VERSION", "");
+    vi.stubEnv("KURU_COMMIT", "");
+    vi.stubEnv("KURU_BUILT_AT", "");
+    expect(formatBuildStamp(currentBuildStamp())).toBe("1.0.7 (dev, dev)");
   });
 
   it("prints that same identity from the packager entry", () => {
