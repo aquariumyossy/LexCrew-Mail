@@ -72,12 +72,6 @@ export const aboutCopy = {
     },
     { name: "node-ical", license: "Apache-2.0", copyright: "Copyright Jens Maus" },
     { name: "pdf.js", license: "Apache-2.0", copyright: "Copyright 2024 Mozilla Foundation" },
-    {
-      name: "node-forge",
-      license: "BSD-3-Clause",
-      copyright: "Copyright (c) 2010 Digital Bazaar, Inc.",
-      choice: "BSD-3-Clause または GPL-2.0。本アプリは BSD-3-Clause。",
-    },
   ] satisfies LibraryNotice[],
   credit: "弁護士　吉田秀平",
 };
