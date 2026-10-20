@@ -235,6 +235,7 @@ namespace KuruOutlook
             "readItem:function(){return chrome.webview.hostObjects.sync.bridge.ReadItem();}," +
             "readParties:function(){return chrome.webview.hostObjects.sync.bridge.ReadParties();}," +
             "readHeader:function(){return chrome.webview.hostObjects.sync.bridge.ReadHeader();}," +
+            "readConversation:function(){return chrome.webview.hostObjects.sync.bridge.ReadConversation();}," +
             "writeDraft:function(json){return chrome.webview.hostObjects.sync.bridge.WriteDraft(json);}," +
             "readCalendar:function(json){return chrome.webview.hostObjects.sync.bridge.ReadCalendar(json);}," +
             "listMailFiles:function(){return chrome.webview.hostObjects.sync.bridge.ListMailFiles();}," +

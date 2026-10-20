@@ -3,6 +3,15 @@ import { stripSteeringMarks } from "./untrusted";
 
 export type ThreadParty = { name?: string; address?: string };
 
+/** One message in the open conversation. Addresses here are in-thread even when the open item does not list them. */
+export type ThreadMessage = {
+  from?: string;
+  sender?: string;
+  to?: string[];
+  cc?: string[];
+  replyTo?: string[];
+};
+
 export type ThreadSnapshot = {
   subject: string;
   from: string;
@@ -10,6 +19,7 @@ export type ThreadSnapshot = {
   cc: string[];
   bcc?: string[];
   parties: ThreadParty[];
+  messages?: ThreadMessage[];
 };
 
 export type DraftChange = {
@@ -56,11 +66,7 @@ export function isMailbox(value: string): boolean {
 
 export function reviewDraftChange(draft: MailDraft, thread: ThreadSnapshot): DraftReview {
   const known = knownParties(thread);
-  const allow = new Set(known.map((party) => party.address));
-  for (const label of [thread.from, ...(thread.to || []), ...(thread.cc || []), ...(thread.bcc || [])]) {
-    const smtp = smtpOf(label);
-    if (smtp && isMailbox(smtp)) allow.add(smtp);
-  }
+  const allow = threadMailboxes(thread, known);
 
   const next: MailDraft = {
     subject: "",
@@ -172,6 +178,44 @@ export async function gateDraftWrite(
   const approved = await confirm(review.changes);
   if (!approved) return { ok: false, error: "件名または宛先の変更はキャンセルされました。本文は書いていません。" };
   return { ok: true, draft: review.draft, headerApproved: true };
+}
+
+/** From, Sender, To, Cc, and Reply-To on every message in the conversation, plus the open item. */
+function threadMailboxes(thread: ThreadSnapshot, known: NamedAddress[]): Set<string> {
+  const allow = new Set(known.map((party) => party.address));
+  const labels = [thread.from, ...(thread.to || []), ...(thread.cc || []), ...(thread.bcc || [])];
+  for (const message of thread.messages || []) {
+    labels.push(message.from || "", message.sender || "", ...(message.to || []), ...(message.cc || []), ...(message.replyTo || []));
+  }
+  for (const label of labels) {
+    const smtp = smtpOf(label);
+    if (smtp && isMailbox(smtp)) allow.add(smtp);
+  }
+  return allow;
+}
+
+export function parseConversation(value: unknown): ThreadMessage[] {
+  if (!value || typeof value !== "object") return [];
+  const rows = (value as { messages?: unknown }).messages;
+  if (!Array.isArray(rows)) return [];
+  const messages: ThreadMessage[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const record = row as Record<string, unknown>;
+    messages.push({
+      from: typeof record.from === "string" ? record.from : "",
+      sender: typeof record.sender === "string" ? record.sender : "",
+      to: stringList(record.to),
+      cc: stringList(record.cc),
+      replyTo: stringList(record.replyTo),
+    });
+  }
+  return messages;
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item).trim()).filter((item) => item.length > 0);
 }
 
 function allowAll(labels: string[], allow: Set<string>): Set<string> {

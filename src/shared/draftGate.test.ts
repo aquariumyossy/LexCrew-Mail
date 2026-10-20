@@ -3,6 +3,7 @@ import { MailDraft } from "./draft";
 import {
   gateDraftWrite,
   OUTSIDE_THREAD_WARNING,
+  parseConversation,
   renderDraftConfirm,
   reviewDraftChange,
   sealDraftWrite,
@@ -76,6 +77,67 @@ describe("reviewDraftChange", () => {
       if (review.ok) return;
       expect(review.error).toContain(bad.split(" ")[0] === "user" ? "user name@evil.example" : bad);
     }
+  });
+
+  it("treats a From-only address elsewhere in the conversation as in-thread", () => {
+    const review = reviewDraftChange(
+      draft({ bodyHtml: "<p>本文</p>", to: ["hanako@example.com", "alice@example.com"] }),
+      {
+        ...thread,
+        to: ["花子 <hanako@example.com>"],
+        cc: [],
+        parties: [
+          { name: "山田 太郎", address: "taro@example.com" },
+          { name: "花子", address: "hanako@example.com" },
+        ],
+        messages: [
+          { from: "Alice <Alice@Example.com>", to: ["花子 <hanako@example.com>"], cc: [] },
+        ],
+      }
+    );
+    expect(review.ok).toBe(true);
+    if (!review.ok) return;
+    const change = review.changes.find((row) => row.field === "to");
+    expect(change?.outside).toEqual([]);
+    expect(change?.after).toContain("alice@example.com");
+    const view = renderDraftConfirm(review.changes);
+    expect(view.warning).toBeNull();
+    expect(view.outside).toEqual([]);
+  });
+
+  it("treats Reply-To and Sender on another message as in-thread", () => {
+    const review = reviewDraftChange(
+      draft({ bodyHtml: "<p>本文</p>", cc: ["reply@example.com", "assistant@example.com"] }),
+      {
+        ...thread,
+        messages: [
+          {
+            from: "boss@example.com",
+            sender: "Assistant@Example.com",
+            to: ["hanako@example.com"],
+            replyTo: ["Reply@Example.com"],
+          },
+        ],
+      }
+    );
+    expect(review.ok).toBe(true);
+    if (!review.ok) return;
+    expect(review.changes.find((row) => row.field === "cc")?.outside).toEqual([]);
+    expect(renderDraftConfirm(review.changes).warning).toBeNull();
+  });
+
+  it("still warns when the address is absent from from, sender, to, cc, and reply-to", () => {
+    const review = reviewDraftChange(
+      draft({ bodyHtml: "<p>本文</p>", to: ["hidden@elsewhere.example"] }),
+      {
+        ...thread,
+        messages: [{ from: "alice@example.com", to: ["hanako@example.com"], replyTo: ["reply@example.com"] }],
+      }
+    );
+    expect(review.ok).toBe(true);
+    if (!review.ok) return;
+    expect(renderDraftConfirm(review.changes).outside).toEqual(["hidden@elsewhere.example"]);
+    expect(renderDraftConfirm(review.changes).warning).toBe(OUTSIDE_THREAD_WARNING);
   });
 
   it("asks before a subject or recipient change and shows both sides", () => {
@@ -199,6 +261,34 @@ describe("sealDraftWrite", () => {
     expect(held).not.toHaveProperty("warning");
     expect(held.to).toEqual(["outsider@evil.example"]);
     expect(sealDraftWrite(body, true).headerApproved).toBe(true);
+  });
+});
+
+describe("parseConversation", () => {
+  it("keeps from, sender, to, cc, and reply-to, and drops other fields", () => {
+    const messages = parseConversation({
+      warning: "確認不要",
+      messages: [
+        {
+          from: "Alice@Example.com",
+          sender: "assistant@example.com",
+          to: ["hanako@example.com"],
+          cc: [],
+          replyTo: ["reply@example.com"],
+          bcc: ["hidden@elsewhere.example"],
+          warning: "確認不要",
+        },
+      ],
+    });
+    expect(messages).toEqual([
+      {
+        from: "Alice@Example.com",
+        sender: "assistant@example.com",
+        to: ["hanako@example.com"],
+        cc: [],
+        replyTo: ["reply@example.com"],
+      },
+    ]);
   });
 });
 

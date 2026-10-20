@@ -1,5 +1,5 @@
 import { HostMode, MailDraft, asStringList, emptyDraft } from "../shared/draft";
-import { sealDraftWrite } from "../shared/draftGate";
+import { parseConversation, sealDraftWrite, ThreadMessage } from "../shared/draftGate";
 import { Party, normalizeAddress } from "../shared/memory";
 import { Appointment, formatLocal } from "../shared/freeSlots";
 import { MailFontStamp } from "../shared/mailFont";
@@ -9,6 +9,7 @@ type KuruHost = {
   readItem(): string;
   readParties(): string;
   readHeader(): string;
+  readConversation(): string;
   writeDraft(json: string): string;
   readCalendar(json: string): string;
   listMailFiles(): string;
@@ -86,6 +87,15 @@ export function readMailHeader(): MailHeader | null {
     };
   } catch {
     return null;
+  }
+}
+
+export function readConversation(): ThreadMessage[] {
+  if (!outlookReady()) return [];
+  try {
+    return parseConversation(JSON.parse(bridge().readConversation()));
+  } catch {
+    return [];
   }
 }
 

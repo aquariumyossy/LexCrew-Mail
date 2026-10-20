@@ -133,6 +133,29 @@ namespace KuruOutlook
             }
         }
 
+        public string ReadConversation()
+        {
+            try
+            {
+                bool inspector;
+                dynamic item = MailTarget.Draft(_window, out inspector);
+                if (item == null)
+                {
+                    return "{\"messages\":[]}";
+                }
+                var messages = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
+                CollectConversation(item, messages);
+                return new JavaScriptSerializer().Serialize(new System.Collections.Generic.Dictionary<string, object>
+                {
+                    { "messages", messages }
+                });
+            }
+            catch
+            {
+                return "{\"messages\":[]}";
+            }
+        }
+
         public string ReadParties()
         {
             try
@@ -1131,6 +1154,233 @@ namespace KuruOutlook
                 parts[i] = Convert.ToString(list[i]);
             }
             return parts;
+        }
+
+        const int ConversationLimit = 400;
+
+        static void CollectConversation(dynamic item, System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages)
+        {
+            var seen = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string openId = SafeString(() => Convert.ToString(item.EntryID));
+            if (openId.Length > 0)
+            {
+                seen.Add(openId);
+            }
+            try
+            {
+                messages.Add(MessageParties(item));
+            }
+            catch
+            {
+            }
+            try
+            {
+                dynamic conversation = item.GetConversation();
+                if (conversation == null)
+                {
+                    return;
+                }
+                try
+                {
+                    WalkConversation(conversation, conversation.GetRootItems(), messages, seen, 0);
+                }
+                catch
+                {
+                }
+                try
+                {
+                    CollectConversationTable(item, conversation, messages, seen);
+                }
+                catch
+                {
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        static void WalkConversation(
+            dynamic conversation,
+            dynamic roots,
+            System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages,
+            System.Collections.Generic.HashSet<string> seen,
+            int depth)
+        {
+            if (roots == null || depth > 40 || messages.Count >= ConversationLimit)
+            {
+                return;
+            }
+            int count = 0;
+            try
+            {
+                count = Convert.ToInt32(roots.Count);
+            }
+            catch
+            {
+                return;
+            }
+            for (int i = 1; i <= count && messages.Count < ConversationLimit; i++)
+            {
+                dynamic mail = null;
+                try
+                {
+                    mail = roots[i];
+                    if (mail == null)
+                    {
+                        continue;
+                    }
+                    string entryId = SafeString(() => Convert.ToString(mail.EntryID));
+                    bool fresh = entryId.Length == 0 || seen.Add(entryId);
+                    if (fresh)
+                    {
+                        messages.Add(MessageParties(mail));
+                    }
+                    dynamic children = null;
+                    try
+                    {
+                        children = conversation.GetChildren(mail);
+                    }
+                    catch
+                    {
+                    }
+                    WalkConversation(conversation, children, messages, seen, depth + 1);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        static void CollectConversationTable(
+            dynamic item,
+            dynamic conversation,
+            System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> messages,
+            System.Collections.Generic.HashSet<string> seen)
+        {
+            dynamic table = conversation.GetTable();
+            if (table == null)
+            {
+                return;
+            }
+            try
+            {
+                table.Columns.Add("EntryID");
+            }
+            catch
+            {
+            }
+            int guard = 0;
+            while (messages.Count < ConversationLimit && guard < ConversationLimit)
+            {
+                guard++;
+                bool end = true;
+                try
+                {
+                    end = (bool)table.EndOfTable;
+                }
+                catch
+                {
+                    return;
+                }
+                if (end)
+                {
+                    return;
+                }
+                try
+                {
+                    dynamic row = table.GetNextRow();
+                    if (row == null)
+                    {
+                        return;
+                    }
+                    string entryId = Convert.ToString(row["EntryID"]) ?? "";
+                    if (entryId.Length == 0 || !seen.Add(entryId))
+                    {
+                        continue;
+                    }
+                    dynamic mail = item.Session.GetItemFromID(entryId);
+                    if (mail == null)
+                    {
+                        continue;
+                    }
+                    messages.Add(MessageParties(mail));
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        static System.Collections.Generic.Dictionary<string, object> MessageParties(dynamic item)
+        {
+            string sender = SenderSmtp(item);
+            string from = RepresentingSmtp(item);
+            if (from.Length == 0)
+            {
+                from = sender;
+            }
+            return new System.Collections.Generic.Dictionary<string, object>
+            {
+                { "from", from },
+                { "sender", sender },
+                { "to", RecipientsOfType(item, 1) },
+                { "cc", RecipientsOfType(item, 2) },
+                { "replyTo", ReplyToAddresses(item) }
+            };
+        }
+
+        static string RepresentingSmtp(dynamic item)
+        {
+            try
+            {
+                string behalf = SmtpOfEntry(item.SentOnBehalfOf);
+                if (behalf.Length > 0)
+                {
+                    return behalf;
+                }
+            }
+            catch
+            {
+            }
+            string prop = AcceptSmtp(SafeString(() => Convert.ToString(item.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x5D02001F"))));
+            if (prop.Length > 0)
+            {
+                return prop;
+            }
+            return "";
+        }
+
+        static string[] ReplyToAddresses(dynamic item)
+        {
+            var list = new System.Collections.Generic.List<string>();
+            try
+            {
+                dynamic recipients = item.ReplyRecipients;
+                int count = recipients == null ? 0 : Convert.ToInt32(recipients.Count);
+                for (int i = 1; i <= count; i++)
+                {
+                    try
+                    {
+                        AddParticipant(list, RecipientSmtp(recipients[i]));
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
+            if (list.Count == 0)
+            {
+                string[] labels = MailParty.LabelsFromDisplayList(SafeString(() => Convert.ToString(item.ReplyRecipientNames)));
+                for (int i = 0; i < labels.Length; i++)
+                {
+                    AddParticipant(list, AcceptSmtp(MailParty.Smtp(labels[i])));
+                }
+            }
+            return list.ToArray();
         }
 
         static string[] ThreadParticipants(dynamic item)

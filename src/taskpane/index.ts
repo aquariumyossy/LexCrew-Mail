@@ -40,7 +40,7 @@ import { Memory, Party, renderMemorySection } from "../shared/memory";
 import { renderMailData, renderMailRules, systemPrompt } from "../shared/prompts";
 import { ScopeRow, Settings, TextSetting, UiFontSize, adoptStoredConnection, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
 import { badgeLabel, ingestBytes, ingestFile, ocrScan, readErrorMessage } from "./files/attach";
-import { conversationKey, currentHostMode, listMailFiles, openThreadKey, outlookReady, readMailFile, readMailHeader, readParties } from "./host";
+import { conversationKey, currentHostMode, listMailFiles, openThreadKey, outlookReady, readConversation, readMailFile, readMailHeader, readParties } from "./host";
 import { HeldMailFile, MAIL_ATTACH_HINT, MailAttachPlan, mailChipNote, planMailAttach } from "./mailAttach";
 import { collectFreeSlots } from "./slots";
 import { renderMarkdown } from "./markdown";
@@ -315,6 +315,7 @@ export function mount(root: HTMLElement): void {
       cc: header?.cc ?? [],
       bcc: header?.bcc ?? [],
       parties: readParties(),
+      messages: readConversation(),
     };
   }
 
