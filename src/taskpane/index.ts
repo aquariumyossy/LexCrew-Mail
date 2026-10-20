@@ -30,6 +30,7 @@ import {
   tooManyFiles,
 } from "../shared/attachedFiles";
 import { plainHttpLanWarning } from "../shared/endpoint";
+import { connectionNotice, llmConfigured } from "./connectionState";
 import { DraftChange, ThreadSnapshot } from "../shared/draftGate";
 import { REMOTE_OCR_NOTICE } from "../shared/ocr";
 import { THINKING_LEVELS, THINKING_LEVEL_LABELS } from "../shared/thinking";
@@ -243,7 +244,7 @@ export function mount(root: HTMLElement): void {
   async function start(): Promise<void> {
     try {
       const result = await adoptStoredConnection(connectionFields(settings));
-      if (result.kind === "ready") apiKeyOnFile = Boolean(result.hasApiKey);
+      if (result.kind === "ready") apiKeyOnFile = result.hasApiKey === true;
       settings = takeAdoptedSettings(settings, result);
       if (result.kind === "ready") saveSettings(settings);
     } catch {
@@ -265,7 +266,7 @@ export function mount(root: HTMLElement): void {
     const lan = plainHttpLanWarning(settings.llmBaseUrl);
     lanWarn.hidden = !lan;
     lanWarn.textContent = lan ?? "";
-    missing.hidden = Boolean(settings.llmBaseUrl.trim() && settings.llmApiKey.trim());
+    missing.hidden = llmConfigured({ llmBaseUrl: settings.llmBaseUrl, llmApiKey: settings.llmApiKey, hasApiKey: apiKeyOnFile });
     bannerHost.textContent = "";
     if (banner) bannerHost.append(bannerView(banner, () => { banner = null; paint(); }));
     chat.textContent = "";
@@ -427,8 +428,9 @@ export function mount(root: HTMLElement): void {
   }
 
   async function runHealth(): Promise<void> {
-    if (!settings.llmBaseUrl.trim() || !settings.llmApiKey.trim()) {
-      banner = { kind: "warning", text: "接続の URL と API キーを入れてください。" };
+    const notice = connectionNotice({ llmBaseUrl: settings.llmBaseUrl, llmApiKey: settings.llmApiKey, hasApiKey: apiKeyOnFile });
+    if (notice) {
+      banner = { kind: "warning", text: notice };
       paint();
       return;
     }
@@ -808,7 +810,7 @@ export function mount(root: HTMLElement): void {
     try {
       const result = await fetchConnection();
       if (result.kind === "ready") {
-        apiKeyOnFile = Boolean(result.hasApiKey);
+        apiKeyOnFile = result.hasApiKey === true;
         settings = takeAdoptedSettings(settings, result);
         saveSettings(settings);
       }
@@ -1193,8 +1195,9 @@ export function mount(root: HTMLElement): void {
       failure.hidden = true;
       save.disabled = true;
       void saveStoredConnection(connectionFields(next))
-        .then(() => {
-          settings = takeAdoptedSettings(next, { kind: "ready", ...connectionFields(next) });
+        .then((result) => {
+          if (result.kind === "ready") apiKeyOnFile = result.hasApiKey === true;
+          settings = takeAdoptedSettings(next, result);
           saveSettings(settings);
           dialog.close();
           void runHealth();
@@ -1615,6 +1618,7 @@ export function mount(root: HTMLElement): void {
       const bytes = await readMailFile(index);
       abort.signal.throwIfAborted();
       await ingestBytes({
+        hasApiKey: apiKeyOnFile,
         name: base.name,
         bytes,
         base,
@@ -1660,6 +1664,7 @@ export function mount(root: HTMLElement): void {
       base,
       pages,
       settings,
+      hasApiKey: apiKeyOnFile,
       signal: abort.signal,
       onUpdate: putMail,
       onRemote: noteRemoteOcr,
@@ -1699,6 +1704,7 @@ export function mount(root: HTMLElement): void {
         file,
         base,
         settings,
+        hasApiKey: apiKeyOnFile,
         signal: abort.signal,
         onUpdate: putFile,
         onRemote: noteRemoteOcr,

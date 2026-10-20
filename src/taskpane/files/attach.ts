@@ -4,6 +4,7 @@ import {
   fileKind,
 } from "../../shared/attachedFiles";
 import { isLoopbackUrl } from "../../shared/ocr";
+import { llmConfigured } from "../connectionState";
 import { Settings, readImage } from "../api";
 import { ocrBytes } from "./ocr";
 import { readBytes } from "./read";
@@ -45,6 +46,7 @@ export async function ingestFile(options: {
   file: File;
   base: { id: string; name: string; size: number; mtime: number };
   settings: Settings;
+  hasApiKey?: boolean;
   signal: AbortSignal;
   onUpdate: (source: FileSource) => void;
   onRemote: () => void;
@@ -63,12 +65,13 @@ export async function ocrScan(options: {
   base: FileBase;
   pages: number;
   settings: Settings;
+  hasApiKey?: boolean;
   signal: AbortSignal;
   onUpdate: (source: FileSource) => void;
   onRemote: () => void;
 }): Promise<void> {
   const { base, signal, onUpdate } = options;
-  if (!options.settings.llmBaseUrl.trim() || !options.settings.llmApiKey.trim()) {
+  if (!llmConfigured({ llmBaseUrl: options.settings.llmBaseUrl, llmApiKey: options.settings.llmApiKey, hasApiKey: options.hasApiKey })) {
     throw new FileReadError("画像を読むには接続の設定が必要です。設定で URL と APIキーを入れてください。");
   }
   if (!isLoopbackUrl(options.settings.llmBaseUrl)) {
@@ -91,6 +94,7 @@ export async function ingestBytes(options: {
   bytes: ArrayBuffer;
   base: FileBase;
   settings: Settings;
+  hasApiKey?: boolean;
   signal: AbortSignal;
   onUpdate: (source: FileSource) => void;
   onRemote: () => void;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyAdopt, settingsForStorage } from "./connectionState";
+import { applyAdopt, connectionNotice, llmConfigured, settingsForStorage } from "./connectionState";
 
 const stored = {
   llmBaseUrl: "http://local",
@@ -39,5 +39,38 @@ describe("applyAdopt", () => {
     expect(applied.keepConnection).toBe(false);
     expect(applied.settings).toEqual(stored);
     expect(settingsForStorage(applied.settings, false)).toEqual({ model: "qwen" });
+  });
+});
+
+describe("saved key reported only as presence", () => {
+  it("does not show the startup banner or 未設定 when the key stays on disk", () => {
+    const applied = applyAdopt(
+      { llmBaseUrl: "", llmApiKey: "", model: "qwen", searxngUrl: "" },
+      { kind: "ready", llmBaseUrl: "http://100.65.231.111:8000/v1", searxngUrl: "", hasApiKey: true }
+    );
+    expect(applied.settings.llmApiKey).toBe("");
+    expect(applied.settings.llmBaseUrl).toBe("http://100.65.231.111:8000/v1");
+    const view = { ...applied.settings, hasApiKey: true };
+    expect(llmConfigured(view)).toBe(true);
+    expect(connectionNotice(view)).toBeNull();
+  });
+
+  it("still asks for a URL and key when nothing is stored", () => {
+    const view = { llmBaseUrl: "http://100.65.231.111:8000/v1", llmApiKey: "", hasApiKey: false };
+    expect(llmConfigured(view)).toBe(false);
+    expect(connectionNotice(view)).toBe("接続の URL と API キーを入れてください。");
+    expect(llmConfigured({ llmBaseUrl: "", llmApiKey: "", hasApiKey: true })).toBe(false);
+  });
+
+  it("stays configured after 保存して接続確認 leaves the key field blank", () => {
+    const drafted = { llmBaseUrl: "http://100.65.231.111:8000/v1", llmApiKey: "", model: "qwen", searxngUrl: "" };
+    const applied = applyAdopt(drafted, {
+      kind: "ready",
+      llmBaseUrl: drafted.llmBaseUrl,
+      searxngUrl: "",
+      hasApiKey: true,
+    });
+    expect(applied.settings.llmApiKey).toBe("");
+    expect(connectionNotice({ ...applied.settings, hasApiKey: true })).toBeNull();
   });
 });

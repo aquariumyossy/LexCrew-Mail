@@ -89,4 +89,20 @@ describe("ingestBytes", () => {
     expect(ocrBytes).toHaveBeenCalledTimes(1);
     expect(seen.at(-1)).toMatchObject({ status: "ready", origin: "ocr", body: "読んだ" });
   });
+
+  it("starts OCR when the key is only marked present", async () => {
+    vi.mocked(readBytes).mockResolvedValue({ status: "scan", pages: 1 });
+    vi.mocked(ocrBytes).mockResolvedValue({ origin: "ocr", body: "読んだ", truncated: false });
+    await ingestBytes({
+      name: base.name,
+      bytes,
+      base,
+      settings: connection("http://100.65.231.111:8000/v1", ""),
+      hasApiKey: true,
+      signal,
+      onUpdate: () => undefined,
+      onRemote: () => undefined,
+    });
+    expect(ocrBytes).toHaveBeenCalledTimes(1);
+  });
 });

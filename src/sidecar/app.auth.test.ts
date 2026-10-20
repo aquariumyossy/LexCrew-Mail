@@ -73,4 +73,35 @@ describe("sidecar session auth", () => {
       connection: { llmApiKey: "secret-key", llmBaseUrl: "http://10.0.0.8:8000/v1" },
     });
   });
+
+  it("calls the LLM with the saved key when the pane sends an empty key", async () => {
+    const seen: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      seen.push(headers.get("authorization") || "");
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      const res = await original(`${base}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-LexCrew-Token": token },
+        body: JSON.stringify({
+          llmBaseUrl: "http://100.65.231.111:8000/v1",
+          llmApiKey: "",
+          model: "m",
+          messages: [{ role: "user", content: "こんにちは" }],
+          tools: [],
+        }),
+      });
+      expect(res.status).toBe(200);
+      expect(seen).toContain("Bearer secret-key");
+      expect(seen.some((header) => header === "Bearer ")).toBe(false);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 });

@@ -9,6 +9,16 @@ export type ConnectionView =
   | { kind: "absent" }
   | { kind: "broken" };
 
+/** URL plus either a key in memory or the file's presence flag. The file does not echo the key. */
+export function llmConfigured(input: { llmBaseUrl: string; llmApiKey: string; hasApiKey?: boolean }): boolean {
+  return Boolean(input.llmBaseUrl.trim()) && (Boolean(input.llmApiKey.trim()) || input.hasApiKey === true);
+}
+
+export function connectionNotice(input: { llmBaseUrl: string; llmApiKey: string; hasApiKey?: boolean }): string | null {
+  if (llmConfigured(input)) return null;
+  return "接続の URL と API キーを入れてください。";
+}
+
 export function applyAdopt<T extends ConnectionFields>(
   settings: T,
   result: ConnectionView

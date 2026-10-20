@@ -243,14 +243,15 @@ export async function adoptStoredConnection(fields: ConnectionFields): Promise<C
   return postJson<ConnectionView>("/api/connection", fields);
 }
 
-export async function saveStoredConnection(fields: ConnectionFields): Promise<void> {
+export async function saveStoredConnection(fields: ConnectionFields): Promise<ConnectionView> {
   const res = await apiFetch("/api/connection", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(fields),
   });
-  const payload = (await res.json()) as { error?: string };
+  const payload = (await res.json()) as ConnectionView & { error?: string };
   if (!res.ok) throw new Error(payload.error || `通信に失敗しました。${res.status}`);
+  return payload;
 }
 
 export function takeAdoptedSettings(settings: Settings, result: ConnectionView): Settings {
