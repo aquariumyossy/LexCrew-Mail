@@ -15,12 +15,8 @@ describe("aboutCopy", () => {
       DOMPurify: "MPL-2.0 または Apache-2.0",
       "node-ical": "Apache-2.0",
       "pdf.js": "Apache-2.0",
-      "node-forge": "BSD-3-Clause",
     });
     expect(aboutCopy.licenses.find((row) => row.name === "JSZip")?.choice).toBe("MIT または GPL-3.0。本アプリは MIT。");
-    expect(aboutCopy.licenses.find((row) => row.name === "node-forge")?.choice).toBe(
-      "BSD-3-Clause または GPL-2.0。本アプリは BSD-3-Clause。"
-    );
   });
 
   it("explains features without the inference engine", () => {
