@@ -1,3 +1,4 @@
+import { execFileSync } from "child_process";
 import { describe, expect, it } from "vitest";
 import { formatBuildStamp, healthBuildReport, releaseIdentity, sidecarBuildStamp, staleBuildWarning } from "./buildStamp";
 
@@ -35,6 +36,27 @@ describe("build stamp", () => {
     expect(named.setup).toBe("LexCrew-Mail-Setup-x86-1.0.7-6e84904-dirty-20261020-1205.exe");
     expect(named.zip).toBe("LexCrew-Mail-x86-1.0.7-6e84904-dirty-20261020-1205.zip");
     expect(named.stamp).toBe("1.0.7 (6e84904-dirty, 2026-10-20 12:05)");
+  });
+
+  it("prints that same identity from the packager entry", () => {
+    const out = execFileSync(process.execPath, ["scripts/emit-release-identity.cjs"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        KURU_VERSION: "1.0.7",
+        KURU_COMMIT: "6e84904",
+        KURU_DIRTY: "1",
+        KURU_BUILT_AT: "2026-10-20 12:05",
+        KURU_FILE_TIME: "20261020-1205",
+        KURU_ARCH: "x86",
+      },
+    });
+    expect(JSON.parse(out)).toEqual({
+      stamp: "1.0.7 (6e84904-dirty, 2026-10-20 12:05)",
+      commit: "6e84904-dirty",
+      setup: "LexCrew-Mail-Setup-x86-1.0.7-6e84904-dirty-20261020-1205.exe",
+      zip: "LexCrew-Mail-x86-1.0.7-6e84904-dirty-20261020-1205.zip",
+    });
   });
 
   it("warns when the pane and the sidecar were built apart", () => {

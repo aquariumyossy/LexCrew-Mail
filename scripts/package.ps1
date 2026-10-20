@@ -4,8 +4,35 @@
 )
 
 $ErrorActionPreference = "Stop"
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
+
+function Join-Repo([string[]]$Parts) {
+  $path = $root
+  foreach ($part in $Parts) { $path = Join-Path $path $part }
+  return $path
+}
+function Require-LocalTool([string]$Name, [string[]]$Parts) {
+  $dir = Join-Repo -Parts @("node_modules", $Name)
+  $script = Join-Repo -Parts $Parts
+  if (-not (Test-Path -LiteralPath $dir) -or -not (Test-Path -LiteralPath $script)) {
+    throw "$Name が node_modules にありません ($script)。リポジトリのルートで npm ci を実行してください。"
+  }
+  return $script
+}
+function Invoke-NodeScript([string]$Name, [string[]]$Parts, [string[]]$ArgList) {
+  $script = Require-LocalTool -Name $Name -Parts $Parts
+  if ($ArgList -and $ArgList.Count -gt 0) { & node $script @ArgList } else { & node $script }
+}
+function Invoke-Esbuild([string[]]$ArgList) {
+  $bin = Require-LocalTool -Name "esbuild" -Parts @("node_modules", "esbuild", "bin", "esbuild")
+  $stream = [IO.File]::Open($bin, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+  try { $first = $stream.ReadByte() } finally { $stream.Dispose() }
+  if ($first -eq 35) { & node $bin @ArgList } else { & $bin @ArgList }
+}
 
 $version = (Get-Content package.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
 $release = Join-Path $root "release"
@@ -39,7 +66,10 @@ $env:KURU_DIRTY = $(if ($dirty) { "1" } else { "0" })
 $env:KURU_BUILT_AT = $builtAt
 $env:KURU_FILE_TIME = $fileTime
 $env:KURU_ARCH = $Platform
-$identityLines = & npx tsx scripts/print-release-identity.ts
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+  throw "node が PATH にありません。Node.js を入れてから、リポジトリのルートで npm ci を実行してください。"
+}
+$identityLines = Invoke-NodeScript -Name "esbuild" -Parts @("scripts", "emit-release-identity.cjs")
 $identityCode = $LASTEXITCODE
 $identityJson = @($identityLines) | Where-Object { $_ -match '^\{' } | Select-Object -Last 1
 if ($identityCode -ne 0 -or -not $identityJson) { throw "release identity failed ($identityCode)" }
@@ -85,16 +115,27 @@ if (Test-Path $setup) { Remove-Item $setup -Force }
 New-Item -ItemType Directory -Force -Path "$stage\addin", "$stage\app\node_modules", "$stage\node" | Out-Null
 
 Step "test"
-npx vitest run
+Invoke-NodeScript -Name "vitest" -Parts @("node_modules", "vitest", "vitest.mjs") -ArgList @("run")
 Check "vitest"
 
 Step "taskpane (webpack production)"
-npx webpack --mode production --devtool false
+Invoke-NodeScript -Name "webpack" -Parts @("node_modules", "webpack", "bin", "webpack.js") -ArgList @("--mode", "production", "--devtool", "false")
 Check "webpack"
 Copy-Item dist "$stage\app\dist" -Recurse
 
 Step "server (esbuild)"
-npx esbuild src/server.release.ts --bundle --platform=node --target=node22 --external:better-sqlite3 --outfile="$stage\app\server.js" --log-level=warning (DefineValue "process.env.KURU_VERSION" $version) (DefineValue "process.env.KURU_COMMIT" $commit) (DefineValue "process.env.KURU_BUILT_AT" $builtAt)
+Invoke-Esbuild -ArgList @(
+  "src/server.release.ts",
+  "--bundle",
+  "--platform=node",
+  "--target=node22",
+  "--external:better-sqlite3",
+  "--outfile=$stage\app\server.js",
+  "--log-level=warning",
+  (DefineValue "process.env.KURU_VERSION" $version),
+  (DefineValue "process.env.KURU_COMMIT" $commit),
+  (DefineValue "process.env.KURU_BUILT_AT" $builtAt)
+)
 Check "esbuild"
 Set-Content -Path "$stage\build.txt" -Value $stamp -Encoding ASCII
 
