@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { FILES_MARKER, historyTurnText, modelTurnText, type CommittedFile } from "./attachedFiles";
 import { systemPrompt } from "./prompts";
 import { UNTRUSTED_NOTICE } from "./untrusted";
 import { buildTools, describeToolCall, parseToolCall, TOOL_FIND_NEEDS_REPLY } from "./tools";
@@ -412,6 +413,7 @@ describe("needs-reply settings the model may change", () => {
       const messages = [
         { role: "user", content: "要返信は？" },
         { role: "tool", content: asked },
+        { role: "assistant", content: WIDEN_QUESTION },
         { role: "user", content: reply },
       ];
       expect(userAgreedToWiden(messages)).toBe(true);
@@ -434,12 +436,14 @@ describe("needs-reply settings the model may change", () => {
     "はい、大丈夫です",
     "お願いしません",
     "OK, no thanks",
+    "探してます",
   ]) {
     it(`does not treat 「${reply}」 as consent to widen`, () => {
       const asked = JSON.stringify({ opened: true, askWider: true, ask: WIDEN_QUESTION });
       const messages = [
         { role: "user", content: "要返信は？" },
         { role: "tool", content: asked },
+        { role: "assistant", content: WIDEN_QUESTION },
         { role: "user", content: reply },
       ];
       expect(userAgreedToWiden(messages)).toBe(false);
@@ -447,12 +451,13 @@ describe("needs-reply settings the model may change", () => {
     });
   }
 
-  for (const reply of ["はい、お願いします", "探してください", "OK"]) {
+  for (const reply of ["はい、お願いします", "探してください", "OK", "お願いしますね", "お願いいたします", "よろしくお願いします", "探して"]) {
     it(`treats the whole reply 「${reply}」 as consent to widen`, () => {
       const asked = JSON.stringify({ opened: true, askWider: true, days: 3, ask: WIDEN_QUESTION });
       const messages = [
         { role: "user", content: "要返信は？" },
         { role: "tool", content: asked },
+        { role: "assistant", content: WIDEN_QUESTION },
         { role: "user", content: reply },
       ];
       expect(userAgreedToWiden(messages)).toBe(true);
@@ -500,6 +505,7 @@ describe("needs-reply settings the model may change", () => {
     const messages = [
       { role: "user", content: "今日の未返信" },
       { role: "tool", content: asked },
+      { role: "assistant", content: WIDEN_QUESTION },
       { role: "user", content: "はい" },
     ];
     const consent = widenConsent(messages);
@@ -580,13 +586,19 @@ describe("needs-reply settings the model may change", () => {
     });
   });
 
-  it("does not keep consent after an error, so a later one-day search is not saved", () => {
+  it("does not keep consent after a find_needs_reply error, so a later one-day search is not saved", () => {
     const asked = JSON.stringify({ opened: true, askWider: true, days: 1, ask: WIDEN_QUESTION });
     const afterError = [
       { role: "user", content: "今日の未返信" },
       { role: "tool", content: asked },
+      { role: "assistant", content: WIDEN_QUESTION },
       { role: "user", content: "はい" },
-      { role: "tool", content: "エラー: 検索に失敗しました。" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "nr2", type: "function" as const, function: { name: "find_needs_reply", arguments: "{\"days\":7}" } }],
+      },
+      { role: "tool", content: "エラー: 検索に失敗しました。", tool_call_id: "nr2" },
     ];
     const closed = widenConsent(afterError);
     expect(closed.agreed).toBe(false);
@@ -614,6 +626,93 @@ describe("needs-reply settings the model may change", () => {
       note: "この検索だけ過去1日にします",
       error: null,
     });
+  });
+
+  function attachedFile(body: string): CommittedFile {
+    return { id: "memo", name: "memo.txt", origin: "text", body, truncated: false, size: body.length, mtime: 1 };
+  }
+
+  function expectAttachedYesPersists(content: string): void {
+    const asked = JSON.stringify({ opened: true, askWider: true, days: 3, ask: WIDEN_QUESTION });
+    const consent = widenConsent([
+      { role: "user", content: "要返信は？" },
+      { role: "tool", content: asked },
+      { role: "assistant", content: WIDEN_QUESTION },
+      { role: "user", content },
+    ]);
+    expect(consent.agreed).toBe(true);
+    expect(consent.askedDays).toBe(3);
+    expect(planNeedsReplyDays({
+      saved: 3,
+      requested: 7,
+      askedDays: consent.askedDays,
+      agreedToWiden: consent.agreed,
+      pendingAsk: consent.pending,
+    })).toEqual({
+      searchDays: 7,
+      persist: true,
+      note: "探す期間を7日にしました",
+      error: null,
+    });
+  }
+
+  it("treats はい with a live attachment as consent and persists", () => {
+    const content = modelTurnText("はい", [attachedFile("第1条の本文")], 131_072);
+    expect(content).toContain("第1条の本文");
+    expectAttachedYesPersists(content);
+  });
+
+  it("treats はい with a zero-budget attachment as consent and persists", () => {
+    const content = modelTurnText("はい", [attachedFile("第1条の本文")], 0);
+    expect(content).toContain(FILES_MARKER);
+    expect(content).not.toContain("第1条の本文");
+    expectAttachedYesPersists(content);
+  });
+
+  it("treats はい with a history attachment stub as consent and persists", () => {
+    const content = historyTurnText("はい", [attachedFile("第1条の本文")], 131_072);
+    expect(content).toContain("memo.txt");
+    expect(content).not.toContain("第1条の本文");
+    expectAttachedYesPersists(content);
+  });
+
+  it("does not treat はい to a different question as consent to widen", () => {
+    const asked = JSON.stringify({ opened: true, askWider: true, days: 3, ask: WIDEN_QUESTION });
+    const messages = [
+      { role: "user", content: "要返信は？" },
+      { role: "tool", content: asked },
+      { role: "assistant", content: "下書きを作りましょうか？" },
+      { role: "user", content: "はい" },
+    ];
+    expect(userAgreedToWiden(messages)).toBe(false);
+    expect(widenAskPending(messages)).toBe(false);
+  });
+
+  it("does not close consent when another tool errors", () => {
+    const asked = JSON.stringify({ opened: true, askWider: true, days: 3, ask: WIDEN_QUESTION });
+    const messages = [
+      { role: "user", content: "要返信は？" },
+      { role: "tool", content: asked },
+      { role: "assistant", content: WIDEN_QUESTION },
+      { role: "user", content: "はい" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "sent", type: "function" as const, function: { name: "search_sent", arguments: "{\"q\":\"期日\"}" } }],
+      },
+      { role: "tool", content: "エラー: 送信済みを検索できません。", tool_call_id: "sent" },
+    ];
+    const consent = widenConsent(messages);
+    expect(consent.agreed).toBe(true);
+    expect(consent.pending).toBe(false);
+    expect(consent.askedDays).toBe(3);
+    expect(planNeedsReplyDays({
+      saved: 3,
+      requested: 7,
+      askedDays: consent.askedDays,
+      agreedToWiden: consent.agreed,
+      pendingAsk: consent.pending,
+    }).persist).toBe(true);
   });
 
   it("offers the chat tool without a way to pass the server address", () => {

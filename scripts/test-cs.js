@@ -2,7 +2,7 @@
 // Uses the .NET Framework csc that package.ps1 uses only when that csc and the
 // WebView2 package are both present. Otherwise uses the dotnet SDK (LangVersion 5)
 // and outlook/test/Stubs.cs. If neither is available, exits with a message.
-// The temp directory is removed after the run.
+// The temp directory is removed after the run. A cleanup failure only prints a warning.
 // npm test does not run this. package.ps1 still omits *.test.cs.
 const { spawnSync } = require("child_process");
 const fs = require("fs");
@@ -203,7 +203,11 @@ function main() {
     const how = useCsc ? compileWithCsc(csc, outDir) : compileWithDotnet(dotnet, outDir);
     process.stdout.write(tests.length + " C# tests passed with " + how + "\n");
   } finally {
-    fs.rmSync(outDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(outDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch (error) {
+      process.stderr.write("warning: temp cleanup failed: " + (error && error.message ? error.message : error) + "\n");
+    }
   }
 }
 

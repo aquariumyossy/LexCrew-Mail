@@ -1,3 +1,4 @@
+import { splitHistoryFiles } from "./attachedFiles";
 import { wrapUntrusted } from "./untrusted";
 
 /** How far back the inbox search looks, unless the user or the model changes it. */
@@ -103,11 +104,25 @@ const SUBJECT_PREFIX = /^(?:re|fw|fwd|返信|転送)\s*[:：]\s*/i;
 const LIST_TAG = /^\[[^\]\n]{1,80}\]\s*/;
 /**
  * Consent is the whole reply, not a prefix. Only these short affirmatives,
- * alone or joined by punctuation, with an optional polite tail such as です.
+ * alone or joined by punctuation. A polite tail is optional です, then ね or よ.
+ * ます is part of the word (お願いします), not a tail to remove.
  */
-const CONSENT_WORDS = new Set(["はい", "お願いします", "探してください", "お願い", "うん", "ok", "yes"]);
+const CONSENT_WORDS = new Set([
+  "はい",
+  "お願いします",
+  "お願いいたします",
+  "よろしくお願いします",
+  "探してください",
+  "探して",
+  "お願い",
+  "うん",
+  "ok",
+  "yes",
+]);
 const CONSENT_SPLIT = /[\s、,，.。．!！・…~〜ー－\-]+/u;
-const CONSENT_POLITE = /(?:です|ます)(?:ね|よ)?$|(?:ね|よ)$/u;
+const CONSENT_POLITE = /です(?:ね|よ)?$|(?:ね|よ)$/u;
+/** Tool name, kept here so this module does not import the tool list. */
+const NEEDS_REPLY_TOOL = "find_needs_reply";
 const HONORIFIC = /(?:先生|さん|様|君|殿)$/u;
 const YOSHI = /\u{20BB7}/gu;
 
@@ -168,17 +183,27 @@ export function applyLlmSettings(
   return { ok: true, needsReplyDays: changed.days, note: changed.note };
 }
 
+type ConsentMessage = {
+  role?: string;
+  content?: string;
+  tool_calls?: Array<{ id?: string; function?: { name?: string } }>;
+  tool_call_id?: string;
+};
+
 type WidenConsent = { agreed: boolean; pending: boolean; askedDays: number | null };
 
 /**
  * Consent counts only for the latest widen question.
- * It must follow an earlier user message, and the latest reply after it must be affirmative.
+ * It must follow an earlier user message. The latest reply after it must be affirmative,
+ * and the assistant message immediately before that reply must ask the widen question.
+ * The reply is the user's own text. An attached-file block is ignored.
  * askedDays is the days field of that question's result.
  * A later needs-reply result that does not ask again expires the older question.
- * An error result after the user has already replied expires it too.
+ * A find_needs_reply error after the user has already replied expires it too.
+ * An error from another tool does not.
  * No reply yet means the question is still pending (the model must not widen in that same turn).
  */
-export function widenConsent(messages: Array<{ role?: string; content?: string }>): WidenConsent {
+export function widenConsent(messages: ConsentMessage[]): WidenConsent {
   const ask = latestWidenAsk(messages);
   if (!ask) return { agreed: false, pending: false, askedDays: null };
   let previousUser = false;
@@ -188,18 +213,19 @@ export function widenConsent(messages: Array<{ role?: string; content?: string }
   if (!previousUser) return { agreed: false, pending: false, askedDays: null };
   const reply = latestUserAfter(messages, ask.index);
   if (!reply) return { agreed: false, pending: true, askedDays: ask.days };
-  return { agreed: isAffirmative(reply), pending: false, askedDays: ask.days };
+  const agreed = isAffirmative(reply.text) && answersWidenQuestion(messages, reply.index);
+  return { agreed, pending: false, askedDays: ask.days };
 }
 
-export function userAgreedToWiden(messages: Array<{ role?: string; content?: string }>): boolean {
+export function userAgreedToWiden(messages: ConsentMessage[]): boolean {
   return widenConsent(messages).agreed;
 }
 
-export function widenAskPending(messages: Array<{ role?: string; content?: string }>): boolean {
+export function widenAskPending(messages: ConsentMessage[]): boolean {
   return widenConsent(messages).pending;
 }
 
-function latestWidenAsk(messages: Array<{ role?: string; content?: string }>): { index: number; days: number | null } | null {
+function latestWidenAsk(messages: ConsentMessage[]): { index: number; days: number | null } | null {
   let latest = -1;
   let days: number | null = null;
   let userAfter = false;
@@ -213,7 +239,7 @@ function latestWidenAsk(messages: Array<{ role?: string; content?: string }>): {
       latest = i;
       days = kind.days;
       userAfter = false;
-    } else if (kind.kind === "closed" || (kind.kind === "error" && userAfter)) {
+    } else if (kind.kind === "closed" || (kind.kind === "error" && userAfter && needsReplyToolError(messages, i))) {
       latest = -1;
       days = null;
       userAfter = false;
@@ -236,17 +262,37 @@ function toolWidenKind(content: string): { kind: "ask" | "closed" | "error" | "o
   }
 }
 
-function userText(row: { role?: string; content?: string } | undefined): string | null {
+function needsReplyToolError(messages: ConsentMessage[], index: number): boolean {
+  const id = messages[index]?.tool_call_id;
+  if (!id) return false;
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const calls = messages[i]?.tool_calls;
+    if (!calls) continue;
+    for (const call of calls) {
+      if (call.id === id) return call.function?.name === NEEDS_REPLY_TOOL;
+    }
+  }
+  return false;
+}
+
+function userText(row: ConsentMessage | undefined): string | null {
   if (!row || row.role !== "user" || typeof row.content !== "string") return null;
-  const text = row.content.trim();
+  const text = splitHistoryFiles(row.content).instruction.trim();
   return text ? text : null;
 }
 
-function latestUserAfter(messages: Array<{ role?: string; content?: string }>, askAt: number): string | null {
-  let found: string | null = null;
+function answersWidenQuestion(messages: ConsentMessage[], replyIndex: number): boolean {
+  const previous = messages[replyIndex - 1];
+  return Boolean(
+    previous && previous.role === "assistant" && typeof previous.content === "string" && previous.content.includes(WIDEN_QUESTION)
+  );
+}
+
+function latestUserAfter(messages: ConsentMessage[], askAt: number): { text: string; index: number } | null {
+  let found: { text: string; index: number } | null = null;
   for (let i = askAt + 1; i < messages.length; i += 1) {
     const text = userText(messages[i]);
-    if (text) found = text;
+    if (text) found = { text, index: i };
   }
   return found;
 }

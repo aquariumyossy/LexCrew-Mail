@@ -45,7 +45,12 @@ export async function runTurn(input: {
   onNeedsReply?: (call: {
     days?: number;
     sender: string;
-    messages: Array<{ role: string; content: string }>;
+    messages: Array<{
+      role: string;
+      content: string;
+      tool_calls?: ChatMessage["tool_calls"];
+      tool_call_id?: string;
+    }>;
   }) => Promise<string>;
   currentItemId?: () => string;
   signal: AbortSignal;
@@ -106,7 +111,7 @@ export async function runTurn(input: {
 
 async function executeTool(
   call: ToolCall,
-  messages: Array<{ role: string; content: string }>,
+  messages: ChatMessage[],
   input: {
     settings: Settings;
     pathPrefixes: string[];
@@ -116,7 +121,12 @@ async function executeTool(
     onNeedsReply?: (call: {
     days?: number;
     sender: string;
-    messages: Array<{ role: string; content: string }>;
+    messages: Array<{
+      role: string;
+      content: string;
+      tool_calls?: ChatMessage["tool_calls"];
+      tool_call_id?: string;
+    }>;
   }) => Promise<string>;
     currentItemId?: () => string;
     signal: AbortSignal;
@@ -155,7 +165,12 @@ async function executeTool(
       return input.onNeedsReply({
         days: parsed.tool.days,
         sender: parsed.tool.sender,
-        messages: messages.map((row) => ({ role: row.role, content: row.content || "" })),
+        messages: messages.map((row) => ({
+          role: row.role,
+          content: row.content || "",
+          tool_calls: row.tool_calls,
+          tool_call_id: row.tool_call_id,
+        })),
       });
     }
   } catch (error) {
