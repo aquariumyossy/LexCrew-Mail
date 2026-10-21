@@ -20,9 +20,6 @@ const NAME_MAX = 40;
 const NAME_LIMIT = 12;
 const REASON_MAX = 80;
 
-/** The only setting a chat turn may change. Addresses and keys are not in this list. */
-export const LLM_SAFE_SETTING_KEYS = ["needsReplyDays"] as const;
-
 export type ReplyLabel = "要返信" | "要確認" | "不要";
 export type CandidateReason = "to" | "name";
 
@@ -104,8 +101,8 @@ export type NeedsReplySummary = {
 const QUOTED_LINE = /^\s*[>＞]/;
 const SUBJECT_PREFIX = /^(?:re|fw|fwd|返信|転送)\s*[:：]\s*/i;
 const LIST_TAG = /^\[[^\]\n]{1,80}\]\s*/;
-/** Same markers as SentSearch.EarliestPlain, including Outlook's quoted original. */
-const QUOTE_MARKERS = ["original message", "元のメッセージ", "差出人", "from:"];
+/** A reply to 「もっと前のメールも探しましょうか？」. A refusal or another topic does not match. */
+const AFFIRMATIVE = /^(?:はい|お願い|探して|うん|(?:okay|ok|yes)\b)/i;
 const HONORIFIC = /(?:先生|さん|様|君|殿)$/u;
 const YOSHI = /\u{20BB7}/gu;
 
@@ -166,47 +163,99 @@ export function applyLlmSettings(
   return { ok: true, needsReplyDays: changed.days, note: changed.note };
 }
 
+type WidenConsent = { agreed: boolean; pending: boolean };
+
+/**
+ * Consent counts only for the latest widen question.
+ * It must follow an earlier user message, and the reply after it must be affirmative.
+ * A later needs-reply result that does not ask again expires the older question.
+ * No reply yet means the question is still pending (the model must not widen in that same turn).
+ */
+export function widenConsent(messages: Array<{ role?: string; content?: string }>): WidenConsent {
+  const askAt = latestWidenAsk(messages);
+  if (askAt < 0) return { agreed: false, pending: false };
+  let previousUser = false;
+  for (let i = 0; i < askAt; i += 1) {
+    if (userText(messages[i])) previousUser = true;
+  }
+  if (!previousUser) return { agreed: false, pending: false };
+  const reply = firstUserAfter(messages, askAt);
+  if (!reply) return { agreed: false, pending: true };
+  return { agreed: isAffirmative(reply), pending: false };
+}
+
 export function userAgreedToWiden(messages: Array<{ role?: string; content?: string }>): boolean {
-  let askAt = -1;
+  return widenConsent(messages).agreed;
+}
+
+export function widenAskPending(messages: Array<{ role?: string; content?: string }>): boolean {
+  return widenConsent(messages).pending;
+}
+
+function latestWidenAsk(messages: Array<{ role?: string; content?: string }>): number {
+  let latest = -1;
   for (let i = 0; i < messages.length; i += 1) {
     const row = messages[i];
     if (!row || row.role !== "tool" || typeof row.content !== "string") continue;
-    if (toolAskedToWiden(row.content)) askAt = i;
+    const kind = toolWidenKind(row.content);
+    if (kind === "ask") latest = i;
+    else if (kind === "closed") latest = -1;
   }
-  if (askAt < 0) return false;
-  for (let i = askAt + 1; i < messages.length; i += 1) {
-    const row = messages[i];
-    if (row && row.role === "user" && typeof row.content === "string" && row.content.trim()) return true;
-  }
-  return false;
+  return latest;
 }
 
-function toolAskedToWiden(content: string): boolean {
+function toolWidenKind(content: string): "ask" | "closed" | "other" {
   try {
     const parsed = JSON.parse(content) as { opened?: unknown; askWider?: unknown };
-    return parsed.opened === true && parsed.askWider === true;
+    if (parsed.opened !== true) return "other";
+    return parsed.askWider === true ? "ask" : "closed";
   } catch {
-    return false;
+    return "other";
   }
+}
+
+function userText(row: { role?: string; content?: string } | undefined): string | null {
+  if (!row || row.role !== "user" || typeof row.content !== "string") return null;
+  const text = row.content.trim();
+  return text ? text : null;
+}
+
+function firstUserAfter(messages: Array<{ role?: string; content?: string }>, askAt: number): string | null {
+  for (let i = askAt + 1; i < messages.length; i += 1) {
+    const text = userText(messages[i]);
+    if (text) return text;
+  }
+  return null;
+}
+
+function isAffirmative(text: string): boolean {
+  return AFFIRMATIVE.test(text.trim().normalize("NFKC"));
 }
 
 /**
- * A longer window is saved only after the previous result asked and the user replied.
- * Otherwise the requested days apply to this search alone.
+ * A longer window is saved only after the user agrees to the latest widen question.
+ * A larger value in the same turn, before that reply, is refused.
+ * Any other longer window applies to this search alone.
+ * A shorter window is still saved.
  */
 export function planNeedsReplyDays(input: {
   saved: number;
   requested?: number;
   agreedToWiden: boolean;
-}): { searchDays: number; persist: boolean; note: string | null } {
+  pendingAsk?: boolean;
+}): { searchDays: number; persist: boolean; note: string | null; error: string | null } {
   const saved = normalizeNeedsReplyDays(input.saved);
-  if (input.requested === undefined) return { searchDays: saved, persist: false, note: null };
+  if (input.requested === undefined) return { searchDays: saved, persist: false, note: null, error: null };
   const requested = normalizeNeedsReplyDays(input.requested);
-  if (requested === saved) return { searchDays: saved, persist: false, note: null };
-  if (requested > saved && !input.agreedToWiden) {
-    return { searchDays: requested, persist: false, note: `この検索だけ過去${requested}日にします` };
+  if (requested === saved) return { searchDays: saved, persist: false, note: null, error: null };
+  if (requested < saved) return { searchDays: requested, persist: true, note: daysChangedNote(requested), error: null };
+  if (input.pendingAsk && !input.agreedToWiden) {
+    return { searchDays: saved, persist: false, note: null, error: "同意の前に期間は広げられません。" };
   }
-  return { searchDays: requested, persist: true, note: daysChangedNote(requested) };
+  if (!input.agreedToWiden) {
+    return { searchDays: requested, persist: false, note: `この検索だけ過去${requested}日にします`, error: null };
+  }
+  return { searchDays: requested, persist: true, note: daysChangedNote(requested), error: null };
 }
 
 export function widerDays(days: number): number | null {
@@ -217,26 +266,13 @@ export function widerDays(days: number): number | null {
   return 30;
 }
 
-/** Index of an Outlook quoted original, or -1. Mirrors SentSearch.EarliestPlain. */
-export function outlookQuoteCut(body: string): number {
-  const folded = (body || "").toLowerCase();
-  let best = -1;
-  for (const marker of QUOTE_MARKERS) {
-    const at = folded.indexOf(marker);
-    if (at >= 0 && (best < 0 || at < best)) best = at;
-  }
-  return best;
-}
-
 /**
- * New text only. Drops an Outlook quoted original, then lines that begin with ">"
- * (or the fullwidth form, after indentation).
+ * New text only. The host already drops an Outlook quoted original
+ * (Original Message, 元のメッセージ, 差出人:, From: at the start of a line).
+ * Lines that begin with ">" (or the fullwidth form, after indentation) are dropped here.
  */
 export function unquotedText(body: string): string {
-  const text = body || "";
-  const cut = outlookQuoteCut(text);
-  const preface = cut >= 0 ? text.slice(0, cut) : text;
-  return preface
+  return (body || "")
     .split(/\r?\n/)
     .filter((line) => !QUOTED_LINE.test(line))
     .join("\n");
@@ -274,33 +310,48 @@ export function normalizeSmtp(value: string): string {
   return text;
 }
 
-function addSmtp(into: Set<string>, value: string, skip: Set<string>): void {
+function addSmtp(into: Set<string>, value: string): void {
   const smtp = normalizeSmtp(value);
-  if (!smtp || skip.has(smtp)) return;
+  if (!smtp) return;
   into.add(smtp);
 }
 
-/** Addresses a later sent mail must reach for it to count as the reply. */
-export function replyTargets(row: RawMail, own: string[]): Set<string> {
-  const skip = new Set((own || []).map(normalizeSmtp).filter(Boolean));
+/** From, Reply-To, and the mailing-list address. Co-recipients on To or Cc are not reply targets. */
+export function replyTargets(row: RawMail): Set<string> {
   const targets = new Set<string>();
-  addSmtp(targets, row.fromAddress, new Set());
-  for (const value of row.replyTo || []) addSmtp(targets, value, new Set());
-  for (const value of row.listAddresses || []) addSmtp(targets, value, new Set());
-  for (const value of row.toAddresses || []) addSmtp(targets, value, skip);
-  for (const value of row.ccAddresses || []) addSmtp(targets, value, skip);
+  addSmtp(targets, row.fromAddress);
+  for (const value of row.replyTo || []) addSmtp(targets, value);
+  for (const value of row.listAddresses || []) addSmtp(targets, value);
   return targets;
 }
 
-export function hasSentReply(row: RawMail, sent: SentSubject[], own: string[] = []): boolean {
+function indexSentBySubject(sent: SentSubject[]): Map<string, SentSubject[]> {
+  const map = new Map<string, SentSubject[]>();
+  for (const item of sent) {
+    const key = subjectKey(item.subject);
+    if (!key) continue;
+    const bucket = map.get(key);
+    if (bucket) bucket.push(item);
+    else map.set(key, [item]);
+  }
+  return map;
+}
+
+export function hasSentReply(
+  row: RawMail,
+  sent: SentSubject[],
+  _own: string[] = [],
+  sentIndex?: Map<string, SentSubject[]>
+): boolean {
   const key = subjectKey(row.subject);
   if (!key) return false;
   const received = Date.parse(row.receivedOn);
   if (Number.isNaN(received)) return false;
-  const targets = replyTargets(row, own);
+  const targets = replyTargets(row);
   if (!targets.size) return false;
-  for (const item of sent) {
-    if (subjectKey(item.subject) !== key) continue;
+  const bucket = (sentIndex ?? indexSentBySubject(sent)).get(key);
+  if (!bucket) return false;
+  for (const item of bucket) {
     const sentAt = Date.parse(item.sentOn);
     if (Number.isNaN(sentAt) || sentAt + REPLY_SKEW_MS < received) continue;
     const recipients = [...(item.to || []), ...(item.cc || [])];
@@ -333,6 +384,7 @@ export function selectCandidates(input: {
   const sender = (input.sender || "").trim();
   const own = input.own || [];
   const limit = input.limit ?? NEEDS_REPLY_MAX_RESULTS;
+  const sentIndex = indexSentBySubject(input.sent);
   const ordered = [...input.rows].sort((a, b) => (b.receivedOn || "").localeCompare(a.receivedOn || ""));
   const seen = new Set<string>();
   const out: NeedsReplyCandidate[] = [];
@@ -340,7 +392,7 @@ export function selectCandidates(input: {
     if (out.length >= limit) break;
     if (!row.entryId || seen.has(row.entryId)) continue;
     seen.add(row.entryId);
-    const replied = row.outlookReplied || hasSentReply(row, input.sent, own);
+    const replied = row.outlookReplied || hasSentReply(row, input.sent, own, sentIndex);
     const named = mentionsName(row.subject, row.body, names);
     const toUnreplied = row.inTo && !replied;
     if (!toUnreplied && !named) continue;

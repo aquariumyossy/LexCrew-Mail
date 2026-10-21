@@ -549,7 +549,7 @@ namespace KuruOutlook
             {
                 return "0000-01-01T00:00:00";
             }
-            return when.ToString("yyyy-MM-ddTHH:mm:ss");
+            return NeedsReplyRules.FormatLocalTimestamp(when);
         }
 
         static bool TryDate(dynamic item, string name, out DateTime when)

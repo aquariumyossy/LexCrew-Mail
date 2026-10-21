@@ -84,6 +84,27 @@ class SentSearchTest
         {
             throw new Exception("From header stayed in the preface");
         }
+        string midLine = SentSearch.PlainPreface("内容証明の差出人は吉田先生です");
+        Expect(midLine, "内容証明の差出人は吉田先生です");
+        string midFrom = SentSearch.PlainPreface("前文です。see from: the office、吉田先生");
+        Expect(midFrom, "前文です。see from: the office、吉田先生");
+        SentSearch.SplitBodies("", "内容証明の差出人は吉田先生です", 1200, 800, out excerpt, out prior);
+        Expect(excerpt, "内容証明の差出人は吉田先生です");
+        Expect(prior, "");
+        SentSearch.SplitBodies("", "前文です。途中の文章 from: ここです", 1200, 800, out excerpt, out prior);
+        Expect(excerpt, "前文です。途中の文章 from: ここです");
+        Expect(prior, "");
+        SentSearch.SplitBodies("", "前文です\nFrom: 吉田先生", 1200, 800, out excerpt, out prior);
+        Expect(excerpt, "前文です");
+        ExpectContains(prior, "From:");
+        if (SentSearch.PlainPreface("前文\n  From: 吉田先生").IndexOf("吉田先生") >= 0)
+        {
+            throw new Exception("indented From header stayed in the preface");
+        }
+        if (SentSearch.PlainPreface("差出人は吉田先生です").IndexOf("吉田先生") < 0)
+        {
+            throw new Exception("a line that merely starts with 差出人 and has no colon was cut");
+        }
 
         string longBody = new string('あ', 1300);
         SentSearch.SplitBodies("", longBody, SentSearch.ReceivedExcerptChars, SentSearch.PriorChars, out excerpt, out prior);

@@ -23,7 +23,6 @@ export type NeedsReplyScreenDeps = {
   sender: string;
   note: string | null;
   signal: AbortSignal;
-  abort: () => void;
   query: () => { days: number; names: string[] };
   scan: (request: NeedsReplyScanRequest) => Promise<unknown>;
   judge: (candidates: NeedsReplyCandidate[], names: string[], signal: AbortSignal) => Promise<JudgeLabel[]>;

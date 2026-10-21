@@ -58,7 +58,39 @@ class NeedsReplyTest
         var replyTo = NeedsReplyRules.HeaderSmtps(headers, "Reply-To");
         if (replyTo.Count != 1 || replyTo[0] != "sender@example.com") throw new Exception("reply-to");
         if (NeedsReplyRules.HeaderSmtps(headers, "List-Id").Count != 0) throw new Exception("list-id without smtp");
+
+        ExpectStamp(culture, "cloned separator");
+        ExpectStamp(new CultureInfo("fi-FI"), "fi-FI");
+        CultureInfo japanese = new CultureInfo("ja-JP");
+        try
+        {
+            japanese.DateTimeFormat.Calendar = new JapaneseCalendar();
+        }
+        catch (Exception ex)
+        {
+            throw new Exception("ja-JP JapaneseCalendar unavailable: " + ex.GetType().Name + " " + ex.Message);
+        }
+        ExpectStamp(japanese, "ja-JP JapaneseCalendar");
         return 0;
+    }
+
+    static void ExpectStamp(CultureInfo culture, string label)
+    {
+        CultureInfo previous = Thread.CurrentThread.CurrentCulture;
+        Thread.CurrentThread.CurrentCulture = culture;
+        try
+        {
+            string text = NeedsReplyRules.FormatLocalTimestamp(new DateTime(2026, 10, 18, 9, 30, 0));
+            Expect(text, "2026-10-18T09:30:00");
+        }
+        catch (Exception ex)
+        {
+            throw new Exception(label + ": " + ex.Message);
+        }
+        finally
+        {
+            Thread.CurrentThread.CurrentCulture = previous;
+        }
     }
 
     static void Expect(string actual, string expected)

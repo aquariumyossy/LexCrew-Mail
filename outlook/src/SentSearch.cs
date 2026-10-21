@@ -194,23 +194,110 @@ namespace KuruOutlook
             return plain.Substring(0, cut);
         }
 
+        /// <summary>
+        /// Quote markers count only at the start of a line, after optional whitespace and dashes.
+        /// A mid-line 「差出人」 or "from:" does not cut the text.
+        /// </summary>
         static int EarliestPlain(string plain)
         {
             if (string.IsNullOrEmpty(plain))
             {
                 return -1;
             }
-            string[] markers = { "Original Message", "元のメッセージ", "差出人", "From:" };
-            int best = -1;
-            for (int i = 0; i < markers.Length; i++)
+            int i = 0;
+            int lineStart = 0;
+            while (i <= plain.Length)
             {
-                int at = plain.IndexOf(markers[i], StringComparison.OrdinalIgnoreCase);
-                if (at >= 0 && (best < 0 || at < best))
+                bool boundary = i == plain.Length || plain[i] == '\n' || plain[i] == '\r';
+                if (boundary)
                 {
-                    best = at;
+                    if (LineStartsQuote(plain, lineStart, i))
+                    {
+                        return lineStart;
+                    }
+                    if (i == plain.Length)
+                    {
+                        break;
+                    }
+                    if (plain[i] == '\r' && i + 1 < plain.Length && plain[i + 1] == '\n')
+                    {
+                        i++;
+                    }
+                    i++;
+                    lineStart = i;
+                    continue;
+                }
+                i++;
+            }
+            return -1;
+        }
+
+        static bool LineStartsQuote(string text, int start, int end)
+        {
+            int head = SkipSpace(text, start, end);
+            int dashes = head;
+            while (dashes < end && text[dashes] == '-')
+            {
+                dashes++;
+            }
+            int afterDash = SkipSpace(text, dashes, end);
+            if (RegionStarts(text, afterDash, end, "Original Message", true) || RegionStarts(text, afterDash, end, "元のメッセージ", false))
+            {
+                return true;
+            }
+            if (HeaderName(text, head, end, "差出人") || HeaderName(text, head, end, "From"))
+            {
+                return true;
+            }
+            return false;
+        }
+
+        static int SkipSpace(string text, int index, int end)
+        {
+            while (index < end && char.IsWhiteSpace(text[index]))
+            {
+                index++;
+            }
+            return index;
+        }
+
+        static bool HeaderName(string text, int index, int end, string name)
+        {
+            if (!RegionStarts(text, index, end, name, true))
+            {
+                return false;
+            }
+            int colon = SkipSpace(text, index + name.Length, end);
+            if (colon >= end)
+            {
+                return false;
+            }
+            return text[colon] == ':' || text[colon] == '\uFF1A';
+        }
+
+        static bool RegionStarts(string text, int index, int end, string marker, bool ignoreCase)
+        {
+            if (index < 0 || string.IsNullOrEmpty(marker) || index + marker.Length > end)
+            {
+                return false;
+            }
+            for (int i = 0; i < marker.Length; i++)
+            {
+                char left = text[index + i];
+                char right = marker[i];
+                if (ignoreCase)
+                {
+                    if (char.ToUpperInvariant(left) != char.ToUpperInvariant(right))
+                    {
+                        return false;
+                    }
+                }
+                else if (left != right)
+                {
+                    return false;
                 }
             }
-            return best;
+            return true;
         }
 
         public static string Cap(string text, int max)

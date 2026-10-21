@@ -440,6 +440,7 @@ namespace KuruOutlook
         {
             string text = Mapi(item, BodyWideTag);
             if (text.Length == 0) text = Mapi(item, BodyAnsiTag);
+            if (text.Length == 0) text = Read(() => Convert.ToString(item.Body));
             return SentSearch.PlainPreface(text);
         }
 
@@ -640,6 +641,10 @@ namespace KuruOutlook
             {
                 return "";
             }
+            catch (Exception)
+            {
+                return "";
+            }
         }
 
         static List<string> OwnAddresses(dynamic session)
@@ -769,7 +774,7 @@ namespace KuruOutlook
                 }
             }
             if (when.Year < 1900) return false;
-            text = when.ToString("yyyy-MM-ddTHH:mm:ss");
+            text = NeedsReplyRules.FormatLocalTimestamp(when);
             return true;
         }
 

@@ -39,7 +39,7 @@ import { countOutgoingTokens } from "../shared/meter";
 import { Memory, Party, renderMemorySection } from "../shared/memory";
 import { currentBuildStamp, formatBuildStamp, staleBuildWarning } from "../shared/buildStamp";
 import { renderMailData, renderMailRules, systemPrompt } from "../shared/prompts";
-import { applyLlmSettings, buildJudgeUser, normalizeNeedsReplyDays, normalizeNeedsReplyNames, parseJudgeResult, planNeedsReplyDays, userAgreedToWiden } from "../shared/needsReply";
+import { applyLlmSettings, buildJudgeUser, normalizeNeedsReplyDays, normalizeNeedsReplyNames, parseJudgeResult, planNeedsReplyDays, widenConsent } from "../shared/needsReply";
 import { ScopeRow, Settings, TextSetting, UiFontSize, adoptStoredConnection, chat as requestChat, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, fetchSidecarBuild, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
 import { badgeLabel, ingestBytes, ingestFile, ocrScan, readErrorMessage } from "./files/attach";
 import { conversationKey, currentHostMode, HOST_ITEM_UNKNOWN, jumpToNeedsReply, listMailFiles, openItemId, openNeedsReplyWindow, openThreadKey, outlookReady, readConversation, readHostContext, readMailFile, readMailHeader, readParties, scanNeedsReply } from "./host";
@@ -623,11 +623,14 @@ export function mount(root: HTMLElement): void {
         confirmDraft: askDraft,
         confirmSearch: askSearch,
         onNeedsReply: async (call) => {
+          const consent = widenConsent(call.messages);
           const plan = planNeedsReplyDays({
             saved: settings.needsReplyDays,
             requested: call.days,
-            agreedToWiden: userAgreedToWiden(call.messages),
+            agreedToWiden: consent.agreed,
+            pendingAsk: consent.pending,
           });
+          if (plan.error) return `エラー: ${plan.error}`;
           if (plan.persist) {
             settings = { ...settings, needsReplyDays: plan.searchDays };
             saveSettings(settings);
@@ -920,7 +923,6 @@ export function mount(root: HTMLElement): void {
       sender: request?.sender?.trim() ?? "",
       note: request?.note ?? null,
       signal: abort.signal,
-      abort: () => abort.abort(),
       query: () => ({ days: lockedDays ?? settings.needsReplyDays, names: settings.needsReplyNames }),
       scan: scanNeedsReply,
       judge: async (candidates, names, signal) => {

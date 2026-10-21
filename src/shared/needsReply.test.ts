@@ -24,6 +24,7 @@ import {
   subjectKey,
   summarizeNeedsReply,
   userAgreedToWiden,
+  widenAskPending,
   widerDays,
   type RawMail,
   type SentSubject,
@@ -62,13 +63,12 @@ describe("needs-reply names", () => {
     expect(mentionsName("𠮷田先生", ">吉田先生", ["吉田先生"])).toBe(true);
     expect(mentionsName("別件", ">吉田先生\n吉田先生、質問があります", ["吉田先生"])).toBe(true);
     expect(mentionsName("別件", ">吉田先生", ["吉田先生"])).toBe(false);
-    expect(mentionsName("件名", "各位\n-----Original Message-----\nFrom: 吉田先生 <a@b.c>", ["吉田先生"])).toBe(false);
-    expect(mentionsName("件名", "各位\n-----元のメッセージ-----\n差出人: 吉田先生", ["吉田先生"])).toBe(false);
-    expect(mentionsName("件名", "本文\nFrom: 吉田先生 <a@b.c>\nSent: Monday", ["吉田先生"])).toBe(false);
-    expect(mentionsName("件名", "吉田先生、確認です\n-----Original Message-----\nFrom: 誰か", ["吉田先生"])).toBe(true);
-    const excerpt = excerptForJudge("吉田先生、確認です\n-----Original Message-----\nFrom: 吉田先生\n>古い指示");
-    expect(excerpt).toContain("吉田先生、確認です");
-    expect(excerpt).not.toContain("From:");
+    expect(mentionsName("件名", "内容証明の差出人は吉田先生です", ["吉田先生"])).toBe(true);
+    expect(mentionsName("件名", "本文の途中 from: 吉田先生 への連絡", ["吉田先生"])).toBe(true);
+    expect(mentionsName("無関係", ">吉田先生\n>from: 吉田先生", names)).toBe(false);
+    const excerpt = excerptForJudge("内容証明の差出人は吉田先生です\n>古い指示\nfrom: 途中");
+    expect(excerpt).toContain("内容証明の差出人は吉田先生です");
+    expect(excerpt).toContain("from:");
     expect(excerpt).not.toContain("古い指示");
   });
 
@@ -212,6 +212,35 @@ describe("needs-reply candidates", () => {
     });
     expect(hasSentReply(replyTo, [sentTo("Re: 質問", "2026-10-20T13:00:00", ["desk@example.com"])], ["me@example.com"])).toBe(true);
     expect(hasSentReply(replyTo, [sentTo("Re: 質問", "2026-10-20T13:00:00", ["me@example.com"])], ["me@example.com"])).toBe(false);
+
+    const client = mail({
+      entryId: "client",
+      subject: "見積",
+      inTo: true,
+      fromAddress: "client@example.com",
+      toAddresses: ["me@example.com"],
+      ccAddresses: ["colleague@example.com"],
+      receivedOn: "2026-10-20T09:00:00",
+    });
+    const own = ["me@example.com"];
+    expect(hasSentReply(client, [sentTo("Fw: 見積", "2026-10-20T10:00:00", ["colleague@example.com"])], own)).toBe(false);
+    expect(hasSentReply(client, [sentTo("RE: 見積", "2026-10-20T10:00:00", ["colleague@example.com"])], own)).toBe(false);
+    const noise = Array.from({ length: 40 }, (_, index) => sentTo(`別件 ${index}`, "2026-10-20T11:00:00", ["colleague@example.com"]));
+    const stayed = selectCandidates({
+      rows: [client],
+      sent: [...noise, sentTo("RE: 見積", "2026-10-20T10:00:00", ["colleague@example.com"])],
+      names: [],
+      own,
+    });
+    expect(stayed.map((row) => row.entryId)).toEqual(["client"]);
+    expect(stayed[0].replied).toBe(false);
+    const answered = selectCandidates({
+      rows: [client],
+      sent: [...noise, sentTo("Re: 見積", "2026-10-20T10:00:00", ["client@example.com"])],
+      names: [],
+      own,
+    });
+    expect(answered).toEqual([]);
   });
 
   it("does not treat an older sent item, or a forward to someone else, as the reply", () => {
@@ -272,19 +301,60 @@ describe("needs-reply settings the model may change", () => {
     expect(applyLlmSettings({ needsReplyDays: 3 }, { needsReplyDays: "たくさん" }).ok).toBe(false);
   });
 
-  it("saves a longer window only after the user replies to the widen question", () => {
+  it("saves a longer window only after an affirmative reply to the latest widen question", () => {
     const asked = JSON.stringify({ opened: true, askWider: true, ask: WIDEN_QUESTION });
+    const closed = JSON.stringify({ opened: true, askWider: false, ask: "" });
     const sameTurn = [
       { role: "user", content: "要返信は？" },
       { role: "tool", content: asked },
     ];
     expect(userAgreedToWiden(sameTurn)).toBe(false);
-    const unsolicited = planNeedsReplyDays({ saved: 3, requested: 7, agreedToWiden: false });
-    expect(unsolicited).toEqual({ searchDays: 7, persist: false, note: "この検索だけ過去7日にします" });
-    expect(userAgreedToWiden([...sameTurn, { role: "assistant", content: WIDEN_QUESTION }, { role: "user", content: "はい" }])).toBe(true);
-    const agreed = planNeedsReplyDays({ saved: 3, requested: 7, agreedToWiden: true });
-    expect(agreed).toEqual({ searchDays: 7, persist: true, note: "探す期間を7日にしました" });
-    expect(planNeedsReplyDays({ saved: 3, agreedToWiden: false })).toEqual({ searchDays: 3, persist: false, note: null });
+    expect(widenAskPending(sameTurn)).toBe(true);
+    expect(planNeedsReplyDays({ saved: 3, requested: 7, agreedToWiden: false, pendingAsk: true })).toEqual({
+      searchDays: 3,
+      persist: false,
+      note: null,
+      error: "同意の前に期間は広げられません。",
+    });
+    expect(planNeedsReplyDays({ saved: 3, requested: 7, agreedToWiden: false, pendingAsk: false })).toEqual({
+      searchDays: 7,
+      persist: false,
+      note: "この検索だけ過去7日にします",
+      error: null,
+    });
+    for (const reply of ["はい", "お願いします", "探してください", "OK", "yes"]) {
+      expect(userAgreedToWiden([...sameTurn, { role: "assistant", content: WIDEN_QUESTION }, { role: "user", content: reply }])).toBe(true);
+    }
+    expect(planNeedsReplyDays({ saved: 3, requested: 7, agreedToWiden: true, pendingAsk: false })).toEqual({
+      searchDays: 7,
+      persist: true,
+      note: "探す期間を7日にしました",
+      error: null,
+    });
+    expect(planNeedsReplyDays({ saved: 3, agreedToWiden: false })).toEqual({ searchDays: 3, persist: false, note: null, error: null });
+    for (const reply of ["いいえ", "やめて", "契約書の件です"]) {
+      const refused = [...sameTurn, { role: "user", content: reply }];
+      expect(userAgreedToWiden(refused)).toBe(false);
+      expect(widenAskPending(refused)).toBe(false);
+    }
+    const expired = [
+      ...sameTurn,
+      { role: "user", content: "はい" },
+      { role: "tool", content: closed },
+      { role: "user", content: "先週のも" },
+    ];
+    expect(userAgreedToWiden(expired)).toBe(false);
+    expect(widenAskPending(expired)).toBe(false);
+    const askedAgain = [...sameTurn, { role: "user", content: "はい" }, { role: "tool", content: asked }];
+    expect(userAgreedToWiden(askedAgain)).toBe(false);
+    expect(widenAskPending(askedAgain)).toBe(true);
+    expect(widenAskPending([{ role: "tool", content: asked }])).toBe(false);
+    expect(planNeedsReplyDays({ saved: 7, requested: 3, agreedToWiden: false, pendingAsk: true })).toEqual({
+      searchDays: 3,
+      persist: true,
+      note: "探す期間を3日にしました",
+      error: null,
+    });
   });
 
   it("offers the chat tool without a way to pass the server address", () => {

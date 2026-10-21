@@ -31,6 +31,12 @@ namespace KuruOutlook
             return field + " >= '" + start.ToString("yyyy/MM/dd HH:mm", CultureInfo.InvariantCulture) + "'";
         }
 
+        /// <summary>Local timestamp that Date.parse can read under any calendar or culture.</summary>
+        public static string FormatLocalTimestamp(DateTime when)
+        {
+            return when.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
+        }
+
         /// <summary>reset always starts over. A later batch continues only when it is the same scan.</summary>
         public static string NextSession(bool reset, bool hasSession, bool sameIdentity)
         {
