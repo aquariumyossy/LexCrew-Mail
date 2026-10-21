@@ -504,6 +504,21 @@ namespace KuruOutlook
             return SentLookup.Search(Window(), json);
         }
 
+        public string SearchNeedsReply(string json)
+        {
+            return NeedsReplyLookup.Search(Window(), json);
+        }
+
+        public string SelectNeedsReply(string json)
+        {
+            return NeedsReplyLookup.Select(Window(), json);
+        }
+
+        public string OpenNeedsReply(string json)
+        {
+            return NeedsReplyLookup.Open(Window(), json);
+        }
+
         public string ReadCalendar(string json)
         {
             try

@@ -17,6 +17,7 @@ import { normalizeThinkingBudget, normalizeThinkingLevel, ThinkingLevel } from "
 import { MailFontId, normalizeMailFontId, normalizeMailFontSizePt } from "../shared/mailFont";
 import { Memory, PersonNote, WritingNote } from "../shared/memory";
 import { healthBuildReport } from "../shared/buildStamp";
+import { normalizeNeedsReplyDays, normalizeNeedsReplyNames } from "../shared/needsReply";
 import { applyAdopt, ConnectionFields, ConnectionView, settingsForStorage } from "./connectionState";
 
 export type StoredChatMessage = {
@@ -55,6 +56,8 @@ export type Settings = {
   calendarGoogle: boolean;
   googleIcalUrl: string;
   readMailAttachments: boolean;
+  needsReplyDays: number;
+  needsReplyNames: string[];
   mailFontId: MailFontId;
   mailFontSizePt: number;
   uiFontSize: UiFontSize;
@@ -92,6 +95,8 @@ export function loadSettings(): Settings {
     ...slotDefaults(),
     ...normalizeCalendarSource(null),
     readMailAttachments: true,
+    needsReplyDays: normalizeNeedsReplyDays(undefined),
+    needsReplyNames: [],
     mailFontId: normalizeMailFontId(undefined),
     mailFontSizePt: normalizeMailFontSizePt(undefined),
     uiFontSize: normalizeUiFontSize(undefined),
@@ -114,6 +119,8 @@ export function loadSettings(): Settings {
       ...slotFields(parsed),
       ...normalizeCalendarSource(parsed),
       readMailAttachments: normalizeReadMailAttachments(parsed.readMailAttachments),
+      needsReplyDays: normalizeNeedsReplyDays(parsed.needsReplyDays),
+      needsReplyNames: normalizeNeedsReplyNames(parsed.needsReplyNames),
       mailFontId: normalizeMailFontId(parsed.mailFontId),
       mailFontSizePt: normalizeMailFontSizePt(parsed.mailFontSizePt),
       uiFontSize: normalizeUiFontSize(parsed.uiFontSize),

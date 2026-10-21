@@ -28,6 +28,7 @@ describe("aboutCopy", () => {
       "参考にする情報",
       "予定",
       "ファイル",
+      "要返信",
       "履歴とコンテキスト",
     ]);
     expect(aboutCopy.features.find((feature) => feature.title === "ファイル")?.body).toContain("OCR開始");

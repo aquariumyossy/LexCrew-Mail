@@ -11,6 +11,7 @@ import { compactSearchReplay } from "../shared/searchReplay";
 import {
   TOOL_APPLY_DRAFT,
   TOOL_FIND_FREE_SLOTS,
+  TOOL_FIND_NEEDS_REPLY,
   TOOL_GET_OPEN_ITEM,
   TOOL_LIST_EVENTS,
   TOOL_SEARCH,
@@ -41,6 +42,7 @@ export async function runTurn(input: {
   readThread?: () => ThreadSnapshot;
   confirmDraft?: (changes: DraftChange[]) => Promise<boolean>;
   confirmSearch?: (query: string) => Promise<string | null>;
+  onNeedsReply?: (call: { days?: number; sender: string }) => Promise<string>;
   currentItemId?: () => string;
   signal: AbortSignal;
   onDelta: (snapshot: { content: string; reasoningContent: string }) => void;
@@ -106,6 +108,7 @@ async function executeTool(
     readThread?: () => ThreadSnapshot;
     confirmDraft?: (changes: DraftChange[]) => Promise<boolean>;
     confirmSearch?: (query: string) => Promise<string | null>;
+    onNeedsReply?: (call: { days?: number; sender: string }) => Promise<string>;
     currentItemId?: () => string;
     signal: AbortSignal;
   }
@@ -137,6 +140,10 @@ async function executeTool(
     if (parsed.tool.name === TOOL_SEARCH_SENT) {
       const result = await searchSentMail(parsed.tool.q, parsed.tool.address);
       return result.sent.length || result.received.length ? JSON.stringify(result) : "ヒットなし";
+    }
+    if (parsed.tool.name === TOOL_FIND_NEEDS_REPLY) {
+      if (!input.onNeedsReply) return "エラー: 要返信の一覧を開けません。";
+      return input.onNeedsReply({ days: parsed.tool.days, sender: parsed.tool.sender });
     }
   } catch (error) {
     return `エラー: ${error instanceof Error ? error.message : "失敗しました。"}`;

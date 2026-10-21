@@ -4,6 +4,7 @@ import { parseConversation, sealDraftWrite, ThreadMessage } from "../shared/draf
 import { Party, normalizeAddress } from "../shared/memory";
 import { Appointment, formatLocal } from "../shared/freeSlots";
 import { MailFontStamp } from "../shared/mailFont";
+import { NeedsReplyScanRequest } from "../shared/needsReply";
 
 type KuruHost = {
   getContext(): string;
@@ -16,6 +17,9 @@ type KuruHost = {
   listMailFiles(): string;
   readMailFile(index: number): Promise<string>;
   searchSent(json: string): Promise<string>;
+  searchNeedsReply?(json: string): Promise<string>;
+  selectNeedsReply?(json: string): Promise<string>;
+  openNeedsReply?(json: string): Promise<string>;
 };
 
 export type MailWellFile = { index: number; name: string; size: number };
@@ -245,4 +249,42 @@ export async function writeDraft(draft: MailDraft, font: MailFontStamp, options?
     throw new Error(result.slice("エラー:".length).trim());
   }
   return result;
+}
+
+const NEEDS_REPLY_ADDIN = "要返信の検索には、この版のアドインを入れ直してください。";
+
+function hostJson(raw: unknown): unknown {
+  let value = raw;
+  for (let i = 0; i < 2 && typeof value === "string"; i += 1) {
+    value = JSON.parse(value);
+  }
+  return value;
+}
+
+function needsReplyError(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const error = (value as { error?: unknown }).error;
+  return typeof error === "string" && error.trim() ? error.trim() : null;
+}
+
+export async function scanNeedsReply(request: NeedsReplyScanRequest): Promise<unknown> {
+  const host = bridge();
+  if (typeof host.searchNeedsReply !== "function") throw new Error(NEEDS_REPLY_ADDIN);
+  return hostJson(await host.searchNeedsReply(JSON.stringify(request)));
+}
+
+async function ackNeedsReply(kind: "select" | "open", entryId: string, storeId: string): Promise<void> {
+  const host = bridge();
+  const call = kind === "select" ? host.selectNeedsReply : host.openNeedsReply;
+  if (typeof call !== "function") throw new Error(NEEDS_REPLY_ADDIN);
+  const error = needsReplyError(hostJson(await call(JSON.stringify({ entryId, storeId }))));
+  if (error) throw new Error(error);
+}
+
+export function jumpToNeedsReply(entryId: string, storeId: string): Promise<void> {
+  return ackNeedsReply("select", entryId, storeId);
+}
+
+export function openNeedsReplyWindow(entryId: string, storeId: string): Promise<void> {
+  return ackNeedsReply("open", entryId, storeId);
 }
