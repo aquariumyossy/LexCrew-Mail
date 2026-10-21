@@ -103,6 +103,9 @@ const SUBJECT_PREFIX = /^(?:re|fw|fwd|返信|転送)\s*[:：]\s*/i;
 const LIST_TAG = /^\[[^\]\n]{1,80}\]\s*/;
 /** A reply to 「もっと前のメールも探しましょうか？」. A refusal or another topic does not match. */
 const AFFIRMATIVE = /^(?:はい|お願い|探して|うん|(?:okay|ok|yes)\b)/i;
+/** A leading yes is not consent when the rest refuses or asks what was meant. */
+const CONSENT_NEGATION = /ないで|なくて|じゃない|いらない|ない|やめ|結構/;
+const CONSENT_QUESTION = /[?？]/;
 const HONORIFIC = /(?:先生|さん|様|君|殿)$/u;
 const YOSHI = /\u{20BB7}/gu;
 
@@ -229,14 +232,15 @@ function firstUserAfter(messages: Array<{ role?: string; content?: string }>, as
 }
 
 function isAffirmative(text: string): boolean {
-  return AFFIRMATIVE.test(text.trim().normalize("NFKC"));
+  const folded = text.trim().normalize("NFKC");
+  if (!folded || CONSENT_QUESTION.test(folded) || CONSENT_NEGATION.test(folded)) return false;
+  return AFFIRMATIVE.test(folded);
 }
 
 /**
- * A longer window is saved only after the user agrees to the latest widen question.
+ * A different window is saved only after the user agrees to the latest widen question.
  * A larger value in the same turn, before that reply, is refused.
- * Any other longer window applies to this search alone.
- * A shorter window is still saved.
+ * Any other requested length, longer or shorter, applies to this search alone.
  */
 export function planNeedsReplyDays(input: {
   saved: number;
@@ -248,8 +252,7 @@ export function planNeedsReplyDays(input: {
   if (input.requested === undefined) return { searchDays: saved, persist: false, note: null, error: null };
   const requested = normalizeNeedsReplyDays(input.requested);
   if (requested === saved) return { searchDays: saved, persist: false, note: null, error: null };
-  if (requested < saved) return { searchDays: requested, persist: true, note: daysChangedNote(requested), error: null };
-  if (input.pendingAsk && !input.agreedToWiden) {
+  if (requested > saved && input.pendingAsk && !input.agreedToWiden) {
     return { searchDays: saved, persist: false, note: null, error: "同意の前に期間は広げられません。" };
   }
   if (!input.agreedToWiden) {

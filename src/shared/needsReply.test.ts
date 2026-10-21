@@ -380,14 +380,64 @@ describe("needs-reply settings the model may change", () => {
     expect(widenAskPending(askedAgain)).toBe(true);
   });
 
-  it("still saves a shorter window while a widen question is pending", () => {
-    expect(planNeedsReplyDays({ saved: 7, requested: 3, agreedToWiden: false, pendingAsk: true })).toEqual({
-      searchDays: 3,
-      persist: true,
-      note: "探す期間を3日にしました",
+  it("uses a shorter requested window for that search only", () => {
+    expect(planNeedsReplyDays({ saved: 14, requested: 1, agreedToWiden: false, pendingAsk: false })).toEqual({
+      searchDays: 1,
+      persist: false,
+      note: "この検索だけ過去1日にします",
+      error: null,
+    });
+    expect(planNeedsReplyDays({ saved: 3, requested: 14, agreedToWiden: false, pendingAsk: false })).toEqual({
+      searchDays: 14,
+      persist: false,
+      note: "この検索だけ過去14日にします",
       error: null,
     });
   });
+
+  it("does not save a shorter window while a widen question is pending", () => {
+    expect(planNeedsReplyDays({ saved: 7, requested: 3, agreedToWiden: false, pendingAsk: true })).toEqual({
+      searchDays: 3,
+      persist: false,
+      note: "この検索だけ過去3日にします",
+      error: null,
+    });
+  });
+
+  for (const reply of ["はい、お願いします", "探してください"]) {
+    it(`treats 「${reply}」 as consent to widen`, () => {
+      const asked = JSON.stringify({ opened: true, askWider: true, ask: WIDEN_QUESTION });
+      const messages = [
+        { role: "user", content: "要返信は？" },
+        { role: "tool", content: asked },
+        { role: "user", content: reply },
+      ];
+      expect(userAgreedToWiden(messages)).toBe(true);
+    });
+  }
+
+  for (const reply of [
+    "お願いしないで",
+    "探してほしくない",
+    "探してない",
+    "うん、やめといて",
+    "はい、探さなくていい",
+    "探してくれなくていいです",
+    "OKじゃない",
+    "はい？どういう意味",
+    "お願いだからやめて",
+  ]) {
+    it(`does not treat 「${reply}」 as consent to widen`, () => {
+      const asked = JSON.stringify({ opened: true, askWider: true, ask: WIDEN_QUESTION });
+      const messages = [
+        { role: "user", content: "要返信は？" },
+        { role: "tool", content: asked },
+        { role: "user", content: reply },
+      ];
+      expect(userAgreedToWiden(messages)).toBe(false);
+      expect(widenAskPending(messages)).toBe(false);
+    });
+  }
 
   it("offers the chat tool without a way to pass the server address", () => {
     const tool = buildTools({ searxng: false, argos: false }).find((item) => item.function.name === TOOL_FIND_NEEDS_REPLY);
