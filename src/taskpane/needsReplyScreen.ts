@@ -197,6 +197,7 @@ export function startNeedsReplyScreen(deps: NeedsReplyScreenDeps): { view: HTMLE
         scanned: collected.scanned,
         labeled,
         stopped: collected.stopped,
+        truncated: collected.truncated,
       });
       progress.hidden = true;
       const ended = finishNote(collected);
@@ -236,6 +237,7 @@ export function startNeedsReplyScreen(deps: NeedsReplyScreenDeps): { view: HTMLE
               scanned: collected.scanned,
               labeled: [],
               stopped: true,
+              truncated: collected.truncated,
             })
           );
         }

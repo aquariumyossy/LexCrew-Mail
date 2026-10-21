@@ -68,6 +68,22 @@ class SentSearchTest
         SentSearch.SplitBodies("", "挨拶です\n差出人: 山田", 1200, 800, out excerpt, out prior);
         Expect(excerpt, "挨拶です");
         ExpectContains(prior, "差出人");
+        string original = SentSearch.PlainPreface("吉田先生、確認です\n-----Original Message-----\nFrom: 誰か");
+        ExpectContains(original, "吉田先生、確認です");
+        if (original.IndexOf("Original Message") >= 0 || original.IndexOf("From:") >= 0)
+        {
+            throw new Exception("original message stayed in the preface: " + original);
+        }
+        string japanese = SentSearch.PlainPreface("各位\n-----元のメッセージ-----\n差出人: 吉田先生");
+        ExpectContains(japanese, "各位");
+        if (japanese.IndexOf("差出人") >= 0 || japanese.IndexOf("吉田") >= 0)
+        {
+            throw new Exception("japanese quote stayed in the preface: " + japanese);
+        }
+        if (SentSearch.PlainPreface("本文\nFrom: 吉田先生 <a@b.c>").IndexOf("吉田先生") >= 0)
+        {
+            throw new Exception("From header stayed in the preface");
+        }
 
         string longBody = new string('あ', 1300);
         SentSearch.SplitBodies("", longBody, SentSearch.ReceivedExcerptChars, SentSearch.PriorChars, out excerpt, out prior);

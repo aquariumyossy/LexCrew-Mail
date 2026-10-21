@@ -180,13 +180,27 @@ namespace KuruOutlook
             prior = Cap(plain.Substring(cut).Trim(), priorMax);
         }
 
+        public static string PlainPreface(string plain)
+        {
+            if (string.IsNullOrEmpty(plain))
+            {
+                return "";
+            }
+            int cut = EarliestPlain(plain);
+            if (cut < 0)
+            {
+                return plain;
+            }
+            return plain.Substring(0, cut);
+        }
+
         static int EarliestPlain(string plain)
         {
             if (string.IsNullOrEmpty(plain))
             {
                 return -1;
             }
-            string[] markers = { "Original Message", "差出人" };
+            string[] markers = { "Original Message", "元のメッセージ", "差出人", "From:" };
             int best = -1;
             for (int i = 0; i < markers.Length; i++)
             {

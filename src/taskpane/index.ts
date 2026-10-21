@@ -39,7 +39,7 @@ import { countOutgoingTokens } from "../shared/meter";
 import { Memory, Party, renderMemorySection } from "../shared/memory";
 import { currentBuildStamp, formatBuildStamp, staleBuildWarning } from "../shared/buildStamp";
 import { renderMailData, renderMailRules, systemPrompt } from "../shared/prompts";
-import { applyLlmSettings, buildJudgeUser, normalizeNeedsReplyDays, normalizeNeedsReplyNames, parseJudgeResult } from "../shared/needsReply";
+import { applyLlmSettings, buildJudgeUser, normalizeNeedsReplyDays, normalizeNeedsReplyNames, parseJudgeResult, planNeedsReplyDays, userAgreedToWiden } from "../shared/needsReply";
 import { ScopeRow, Settings, TextSetting, UiFontSize, adoptStoredConnection, chat as requestChat, checkHealth, connectionFields, deleteConversation, ensureConversation, fetchConnection, fetchMemory, fetchSidecarBuild, listConversations, loadConversation, loadMessages, loadScopes, loadSettings, removePerson, saveConversationFiles, saveNotes, savePerson, saveSettings, saveStoredConnection, storeMessage, takeAdoptedSettings } from "./api";
 import { badgeLabel, ingestBytes, ingestFile, ocrScan, readErrorMessage } from "./files/attach";
 import { conversationKey, currentHostMode, HOST_ITEM_UNKNOWN, jumpToNeedsReply, listMailFiles, openItemId, openNeedsReplyWindow, openThreadKey, outlookReady, readConversation, readHostContext, readMailFile, readMailHeader, readParties, scanNeedsReply } from "./host";
@@ -623,20 +623,26 @@ export function mount(root: HTMLElement): void {
         confirmDraft: askDraft,
         confirmSearch: askSearch,
         onNeedsReply: async (call) => {
-          let note: string | null = null;
-          if (call.days !== undefined) {
-            const applied = applyLlmSettings(settings, { needsReplyDays: call.days });
-            if (!applied.ok) return `エラー: ${applied.error}`;
-            if (applied.note) {
-              settings = { ...settings, needsReplyDays: applied.needsReplyDays };
-              saveSettings(settings);
-              note = applied.note;
-              banner = { kind: "success", text: note };
-              paint();
-            }
+          const plan = planNeedsReplyDays({
+            saved: settings.needsReplyDays,
+            requested: call.days,
+            agreedToWiden: userAgreedToWiden(call.messages),
+          });
+          if (plan.persist) {
+            settings = { ...settings, needsReplyDays: plan.searchDays };
+            saveSettings(settings);
+          }
+          if (plan.note) {
+            banner = { kind: "success", text: plan.note };
+            paint();
           }
           try {
-            const summary = await openNeedsReply({ sender: call.sender, note, signal: turn.signal });
+            const summary = await openNeedsReply({
+              sender: call.sender,
+              note: plan.note,
+              signal: turn.signal,
+              days: plan.searchDays,
+            });
             return JSON.stringify(summary);
           } catch (error) {
             return `エラー: ${error instanceof Error ? error.message : "検索に失敗しました。"}`;
@@ -901,7 +907,7 @@ export function mount(root: HTMLElement): void {
 
   let needsReplyAbort: AbortController | null = null;
 
-  async function openNeedsReply(request?: { sender?: string; note?: string | null; signal?: AbortSignal }) {
+  async function openNeedsReply(request?: { sender?: string; note?: string | null; signal?: AbortSignal; days?: number }) {
     needsReplyAbort?.abort();
     const abort = new AbortController();
     needsReplyAbort = abort;
@@ -909,12 +915,13 @@ export function mount(root: HTMLElement): void {
       if (request.signal.aborted) abort.abort();
       else request.signal.addEventListener("abort", () => abort.abort(), { once: true });
     }
+    let lockedDays = request?.days;
     const handle = startNeedsReplyScreen({
       sender: request?.sender?.trim() ?? "",
       note: request?.note ?? null,
       signal: abort.signal,
       abort: () => abort.abort(),
-      query: () => ({ days: settings.needsReplyDays, names: settings.needsReplyNames }),
+      query: () => ({ days: lockedDays ?? settings.needsReplyDays, names: settings.needsReplyNames }),
       scan: scanNeedsReply,
       judge: async (candidates, names, signal) => {
         const completion = await requestChat(
@@ -934,6 +941,7 @@ export function mount(root: HTMLElement): void {
       jump: jumpToNeedsReply,
       openWindow: openNeedsReplyWindow,
       saveDays: (days) => {
+        lockedDays = undefined;
         const applied = applyLlmSettings(settings, { needsReplyDays: days });
         if (!applied.ok || !applied.note) return null;
         settings = { ...settings, needsReplyDays: applied.needsReplyDays };

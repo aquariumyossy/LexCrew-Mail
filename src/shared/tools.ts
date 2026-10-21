@@ -137,7 +137,7 @@ export function buildTools(options: { searxng: boolean; argos: boolean }): ToolD
       function: {
         name: TOOL_FIND_NEEDS_REPLY,
         description:
-          "受信トレイから、返信が要りそうなメールの一覧を開く。宛先が利用者で未返信のメールと、設定した名前が出てくるメールを探す。days を渡すと探す日数の設定を変える。変えられるのはその日数だけである。期間の指定が無いときは days を省略する。sender は差出人の名前の一部。結果が少ないときは、利用者の同意の前に days を増やさない。",
+          "受信トレイから、返信が要りそうなメールの一覧を開く。宛先が利用者で未返信のメールと、設定した名前が出てくるメールを探す。days を渡すとその日数で探す。設定より大きい days を保存できるのは、直前の結果が期間を広げるか尋ね、利用者がそのあと返信したときだけである。それ以外の大きい days はその検索だけに使い、設定は変えない。期間の指定が無いときは days を省略する。sender は差出人の名前の一部。",
         parameters: needsReplyParams,
       },
     },

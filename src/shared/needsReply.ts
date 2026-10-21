@@ -13,8 +13,8 @@ export const NEEDS_REPLY_MAX_MS = 20_000;
 export const FEW_NEEDS_REPLY = 3;
 export const WIDEN_QUESTION = "もっと前のメールも探しましょうか？";
 export const EXCERPT_CHARS = 400;
-/** A sent item this close before the received time still counts as the reply. */
-const REPLY_SKEW_MS = 5 * 60 * 1000;
+/** Clock skew only. A sent mail earlier than this did not answer the received mail. */
+const REPLY_SKEW_MS = 30 * 1000;
 const NAME_MIN = 2;
 const NAME_MAX = 40;
 const NAME_LIMIT = 12;
@@ -35,9 +35,14 @@ export type RawMail = {
   inTo: boolean;
   outlookReplied: boolean;
   body: string;
+  fromAddress: string;
+  replyTo: string[];
+  listAddresses: string[];
+  toAddresses: string[];
+  ccAddresses: string[];
 };
 
-export type SentSubject = { subject: string; sentOn: string };
+export type SentSubject = { subject: string; sentOn: string; to?: string[]; cc?: string[] };
 
 export type NeedsReplyCandidate = RawMail & {
   reasons: CandidateReason[];
@@ -64,6 +69,7 @@ export type NeedsReplyScanBatch = {
   done: boolean;
   /** The host stopped because it had looked at enough mail, not because the folder ended. */
   limited?: boolean;
+  own?: string[];
   error?: string;
 };
 
@@ -96,7 +102,10 @@ export type NeedsReplySummary = {
 };
 
 const QUOTED_LINE = /^\s*[>＞]/;
-const REPLY_PREFIX = /^(?:re|返信)\s*[:：]\s*/i;
+const SUBJECT_PREFIX = /^(?:re|fw|fwd|返信|転送)\s*[:：]\s*/i;
+const LIST_TAG = /^\[[^\]\n]{1,80}\]\s*/;
+/** Same markers as SentSearch.EarliestPlain, including Outlook's quoted original. */
+const QUOTE_MARKERS = ["original message", "元のメッセージ", "差出人", "from:"];
 const HONORIFIC = /(?:先生|さん|様|君|殿)$/u;
 const YOSHI = /\u{20BB7}/gu;
 
@@ -157,6 +166,49 @@ export function applyLlmSettings(
   return { ok: true, needsReplyDays: changed.days, note: changed.note };
 }
 
+export function userAgreedToWiden(messages: Array<{ role?: string; content?: string }>): boolean {
+  let askAt = -1;
+  for (let i = 0; i < messages.length; i += 1) {
+    const row = messages[i];
+    if (!row || row.role !== "tool" || typeof row.content !== "string") continue;
+    if (toolAskedToWiden(row.content)) askAt = i;
+  }
+  if (askAt < 0) return false;
+  for (let i = askAt + 1; i < messages.length; i += 1) {
+    const row = messages[i];
+    if (row && row.role === "user" && typeof row.content === "string" && row.content.trim()) return true;
+  }
+  return false;
+}
+
+function toolAskedToWiden(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content) as { opened?: unknown; askWider?: unknown };
+    return parsed.opened === true && parsed.askWider === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A longer window is saved only after the previous result asked and the user replied.
+ * Otherwise the requested days apply to this search alone.
+ */
+export function planNeedsReplyDays(input: {
+  saved: number;
+  requested?: number;
+  agreedToWiden: boolean;
+}): { searchDays: number; persist: boolean; note: string | null } {
+  const saved = normalizeNeedsReplyDays(input.saved);
+  if (input.requested === undefined) return { searchDays: saved, persist: false, note: null };
+  const requested = normalizeNeedsReplyDays(input.requested);
+  if (requested === saved) return { searchDays: saved, persist: false, note: null };
+  if (requested > saved && !input.agreedToWiden) {
+    return { searchDays: requested, persist: false, note: `この検索だけ過去${requested}日にします` };
+  }
+  return { searchDays: requested, persist: true, note: daysChangedNote(requested) };
+}
+
 export function widerDays(days: number): number | null {
   const current = normalizeNeedsReplyDays(days);
   if (current >= MAX_NEEDS_REPLY_DAYS) return null;
@@ -165,9 +217,26 @@ export function widerDays(days: number): number | null {
   return 30;
 }
 
-/** Lines that begin with ">" (or the fullwidth form, after indentation) are quotes. */
+/** Index of an Outlook quoted original, or -1. Mirrors SentSearch.EarliestPlain. */
+export function outlookQuoteCut(body: string): number {
+  const folded = (body || "").toLowerCase();
+  let best = -1;
+  for (const marker of QUOTE_MARKERS) {
+    const at = folded.indexOf(marker);
+    if (at >= 0 && (best < 0 || at < best)) best = at;
+  }
+  return best;
+}
+
+/**
+ * New text only. Drops an Outlook quoted original, then lines that begin with ">"
+ * (or the fullwidth form, after indentation).
+ */
 export function unquotedText(body: string): string {
-  return (body || "")
+  const text = body || "";
+  const cut = outlookQuoteCut(text);
+  const preface = cut >= 0 ? text.slice(0, cut) : text;
+  return preface
     .split(/\r?\n/)
     .filter((line) => !QUOTED_LINE.test(line))
     .join("\n");
@@ -184,25 +253,58 @@ export function mentionsName(subject: string, body: string, names: string[]): bo
 }
 
 export function subjectKey(subject: string): string {
-  let text = foldNameVariants(subject || "").trim();
-  for (let i = 0; i < 6; i += 1) {
-    const next = text.replace(REPLY_PREFIX, "").trim();
+  let text = foldNameVariants(subject || "").replace(/\s+/g, " ").trim();
+  for (let i = 0; i < 8; i += 1) {
+    const stripped = text.replace(SUBJECT_PREFIX, "").trim();
+    const next = (stripped === text ? text.replace(LIST_TAG, "") : stripped).trim();
     if (next === text) break;
     text = next;
   }
   return text.toLowerCase();
 }
 
-export function hasSentReply(receivedOn: string, subject: string, sent: SentSubject[]): boolean {
-  const key = subjectKey(subject);
+export function normalizeSmtp(value: string): string {
+  let text = (value || "").trim().toLowerCase();
+  const open = text.lastIndexOf("<");
+  const close = text.lastIndexOf(">");
+  if (open >= 0 && close > open) text = text.slice(open + 1, close).trim();
+  if (!text || text.includes(" ") || !text.includes("@")) return "";
+  const at = text.indexOf("@");
+  if (at <= 0 || at !== text.lastIndexOf("@") || at === text.length - 1) return "";
+  return text;
+}
+
+function addSmtp(into: Set<string>, value: string, skip: Set<string>): void {
+  const smtp = normalizeSmtp(value);
+  if (!smtp || skip.has(smtp)) return;
+  into.add(smtp);
+}
+
+/** Addresses a later sent mail must reach for it to count as the reply. */
+export function replyTargets(row: RawMail, own: string[]): Set<string> {
+  const skip = new Set((own || []).map(normalizeSmtp).filter(Boolean));
+  const targets = new Set<string>();
+  addSmtp(targets, row.fromAddress, new Set());
+  for (const value of row.replyTo || []) addSmtp(targets, value, new Set());
+  for (const value of row.listAddresses || []) addSmtp(targets, value, new Set());
+  for (const value of row.toAddresses || []) addSmtp(targets, value, skip);
+  for (const value of row.ccAddresses || []) addSmtp(targets, value, skip);
+  return targets;
+}
+
+export function hasSentReply(row: RawMail, sent: SentSubject[], own: string[] = []): boolean {
+  const key = subjectKey(row.subject);
   if (!key) return false;
-  const received = Date.parse(receivedOn);
+  const received = Date.parse(row.receivedOn);
   if (Number.isNaN(received)) return false;
-  for (const row of sent) {
-    if (subjectKey(row.subject) !== key) continue;
-    const sentAt = Date.parse(row.sentOn);
-    if (Number.isNaN(sentAt)) continue;
-    if (sentAt + REPLY_SKEW_MS >= received) return true;
+  const targets = replyTargets(row, own);
+  if (!targets.size) return false;
+  for (const item of sent) {
+    if (subjectKey(item.subject) !== key) continue;
+    const sentAt = Date.parse(item.sentOn);
+    if (Number.isNaN(sentAt) || sentAt + REPLY_SKEW_MS < received) continue;
+    const recipients = [...(item.to || []), ...(item.cc || [])];
+    if (recipients.some((value) => targets.has(normalizeSmtp(value)))) return true;
   }
   return false;
 }
@@ -224,10 +326,12 @@ export function selectCandidates(input: {
   sent: SentSubject[];
   names: string[];
   sender?: string;
+  own?: string[];
   limit?: number;
 }): NeedsReplyCandidate[] {
   const names = normalizeNeedsReplyNames(input.names);
   const sender = (input.sender || "").trim();
+  const own = input.own || [];
   const limit = input.limit ?? NEEDS_REPLY_MAX_RESULTS;
   const ordered = [...input.rows].sort((a, b) => (b.receivedOn || "").localeCompare(a.receivedOn || ""));
   const seen = new Set<string>();
@@ -236,7 +340,7 @@ export function selectCandidates(input: {
     if (out.length >= limit) break;
     if (!row.entryId || seen.has(row.entryId)) continue;
     seen.add(row.entryId);
-    const replied = row.outlookReplied || hasSentReply(row.receivedOn, row.subject, input.sent);
+    const replied = row.outlookReplied || hasSentReply(row, input.sent, own);
     const named = mentionsName(row.subject, row.body, names);
     const toUnreplied = row.inTo && !replied;
     if (!toUnreplied && !named) continue;
@@ -253,6 +357,15 @@ function stringField(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item === "string" && item.trim()) out.push(item.trim());
+  }
+  return out;
+}
+
 export function parseInboxRow(value: unknown): RawMail | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
@@ -267,6 +380,11 @@ export function parseInboxRow(value: unknown): RawMail | null {
     inTo: row.inTo === true,
     outlookReplied: row.outlookReplied === true,
     body: stringField(row.body).slice(0, 4000),
+    fromAddress: stringField(row.fromAddress),
+    replyTo: stringList(row.replyTo),
+    listAddresses: stringList(row.listAddresses),
+    toAddresses: stringList(row.toAddresses),
+    ccAddresses: stringList(row.ccAddresses),
   };
 }
 
@@ -276,7 +394,7 @@ export function parseSentRow(value: unknown): SentSubject | null {
   const subject = stringField(row.subject);
   const sentOn = stringField(row.sentOn);
   if (!subject && !sentOn) return null;
-  return { subject, sentOn };
+  return { subject, sentOn, to: stringList(row.to), cc: stringList(row.cc) };
 }
 
 export function parseScanBatch(value: unknown): NeedsReplyScanBatch {
@@ -291,7 +409,7 @@ export function parseScanBatch(value: unknown): NeedsReplyScanBatch {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return { rows: [], scanned: 0, done: true, error: "検索結果が不正です。" };
   }
-  const row = parsed as { rows?: unknown; scanned?: unknown; done?: unknown; limited?: unknown; error?: unknown };
+  const row = parsed as { rows?: unknown; scanned?: unknown; done?: unknown; limited?: unknown; own?: unknown; error?: unknown };
   if (typeof row.error === "string" && row.error.trim()) {
     return { rows: [], scanned: 0, done: true, error: row.error.trim() };
   }
@@ -300,14 +418,18 @@ export function parseScanBatch(value: unknown): NeedsReplyScanBatch {
     scanned: typeof row.scanned === "number" && Number.isFinite(row.scanned) ? Math.max(0, row.scanned) : 0,
     done: row.done === true,
     limited: row.limited === true,
+    own: stringList(row.own),
   };
 }
 
-let tokenSerial = 0;
-
-function nextToken(): string {
-  tokenSerial += 1;
-  return `nr${tokenSerial.toString(36)}`;
+/** A token that does not restart at nr1 when another pane loads. */
+export function createNeedsReplyToken(): string {
+  const cryptoObj = globalThis.crypto;
+  const nonce =
+    cryptoObj && typeof cryptoObj.randomUUID === "function"
+      ? cryptoObj.randomUUID().replace(/-/g, "")
+      : Math.random().toString(36).slice(2);
+  return `nr${Date.now().toString(36)}${nonce}`;
 }
 
 export async function collectNeedsReply(options: {
@@ -332,6 +454,7 @@ export async function collectNeedsReply(options: {
   const started = now();
   const sent: SentSubject[] = [];
   const rows: RawMail[] = [];
+  let own: string[] = [];
   let sentScanned = 0;
   let scanned = 0;
   let stopped = false;
@@ -339,12 +462,8 @@ export async function collectNeedsReply(options: {
   const aborted = () => options.signal?.aborted === true;
   const expired = () => now() - started >= maxMs;
 
-  async function drain(
-    folder: "inbox" | "sent",
-    onRow: (value: unknown) => void,
-    stopEarly?: () => boolean
-  ): Promise<void> {
-    const token = nextToken();
+  async function drain(folder: "inbox" | "sent", onRow: (value: unknown) => void): Promise<void> {
+    const token = createNeedsReplyToken();
     let reset = true;
     let seen = 0;
     while (seen < maxScan) {
@@ -356,7 +475,6 @@ export async function collectNeedsReply(options: {
         truncated = true;
         return;
       }
-      if (stopEarly?.()) return;
       const parsed = parseScanBatch(
         await options.scan({ folder, days, take: batch, budgetMs: batchMs, reset, token })
       );
@@ -366,12 +484,13 @@ export async function collectNeedsReply(options: {
       }
       if (parsed.error) throw new Error(parsed.error);
       reset = false;
+      if (parsed.own && parsed.own.length) own = parsed.own;
       if (parsed.limited) truncated = true;
       seen += parsed.scanned;
       if (folder === "sent") sentScanned += parsed.scanned;
       else scanned += parsed.scanned;
       for (const row of parsed.rows) onRow(row);
-      const found = folder === "inbox" ? selectCandidates({ rows, sent, names, sender, limit: maxResults }).length : 0;
+      const found = folder === "inbox" ? selectCandidates({ rows, sent, names, sender, own, limit: maxResults }).length : 0;
       options.onProgress?.({ phase: folder, scanned: folder === "sent" ? sentScanned : scanned, found });
       if (parsed.done) return;
       if (parsed.scanned === 0 && parsed.rows.length === 0) {
@@ -387,17 +506,13 @@ export async function collectNeedsReply(options: {
     if (row) sent.push(row);
   });
   if (!stopped) {
-    await drain(
-      "inbox",
-      (value) => {
-        const row = parseInboxRow(value);
-        if (row) rows.push(row);
-      },
-      () => selectCandidates({ rows, sent, names, sender, limit: maxResults }).length >= maxResults
-    );
+    await drain("inbox", (value) => {
+      const row = parseInboxRow(value);
+      if (row) rows.push(row);
+    });
   }
   return {
-    candidates: selectCandidates({ rows, sent, names, sender, limit: maxResults }),
+    candidates: selectCandidates({ rows, sent, names, sender, own, limit: maxResults }),
     scanned,
     sentScanned,
     stopped,
@@ -504,9 +619,11 @@ export function summarizeNeedsReply(input: {
   scanned: number;
   labeled: Array<{ label: ReplyLabel }>;
   stopped: boolean;
+  truncated?: boolean;
 }): NeedsReplySummary {
   const counts = countLabels(input.labeled);
-  const askWider = !input.stopped && counts.reply < FEW_NEEDS_REPLY && widerDays(input.days) !== null;
+  const askWider =
+    !input.stopped && input.truncated !== true && counts.reply < FEW_NEEDS_REPLY && widerDays(input.days) !== null;
   return {
     opened: true,
     days: normalizeNeedsReplyDays(input.days),

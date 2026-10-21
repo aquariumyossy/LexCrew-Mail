@@ -8,19 +8,25 @@ import {
   applyLlmSettings,
   buildJudgeUser,
   collectNeedsReply,
+  createNeedsReplyToken,
   daysChangedNote,
   excerptForJudge,
   formatReceived,
+  hasSentReply,
   labelCandidates,
   mentionsName,
   normalizeNeedsReplyNames,
   parseJudgeResult,
   parseScanBatch,
+  planNeedsReplyDays,
   progressText,
   selectCandidates,
+  subjectKey,
   summarizeNeedsReply,
+  userAgreedToWiden,
   widerDays,
   type RawMail,
+  type SentSubject,
 } from "./needsReply";
 
 function mail(patch: Partial<RawMail> & Pick<RawMail, "entryId">): RawMail {
@@ -33,7 +39,16 @@ function mail(patch: Partial<RawMail> & Pick<RawMail, "entryId">): RawMail {
     inTo: patch.inTo ?? false,
     outlookReplied: patch.outlookReplied ?? false,
     body: patch.body ?? "",
+    fromAddress: patch.fromAddress ?? "",
+    replyTo: patch.replyTo ?? [],
+    listAddresses: patch.listAddresses ?? [],
+    toAddresses: patch.toAddresses ?? [],
+    ccAddresses: patch.ccAddresses ?? [],
   };
+}
+
+function sentTo(subject: string, sentOn: string, to: string[], cc: string[] = []): SentSubject {
+  return { subject, sentOn, to, cc };
 }
 
 describe("needs-reply names", () => {
@@ -47,6 +62,14 @@ describe("needs-reply names", () => {
     expect(mentionsName("𠮷田先生", ">吉田先生", ["吉田先生"])).toBe(true);
     expect(mentionsName("別件", ">吉田先生\n吉田先生、質問があります", ["吉田先生"])).toBe(true);
     expect(mentionsName("別件", ">吉田先生", ["吉田先生"])).toBe(false);
+    expect(mentionsName("件名", "各位\n-----Original Message-----\nFrom: 吉田先生 <a@b.c>", ["吉田先生"])).toBe(false);
+    expect(mentionsName("件名", "各位\n-----元のメッセージ-----\n差出人: 吉田先生", ["吉田先生"])).toBe(false);
+    expect(mentionsName("件名", "本文\nFrom: 吉田先生 <a@b.c>\nSent: Monday", ["吉田先生"])).toBe(false);
+    expect(mentionsName("件名", "吉田先生、確認です\n-----Original Message-----\nFrom: 誰か", ["吉田先生"])).toBe(true);
+    const excerpt = excerptForJudge("吉田先生、確認です\n-----Original Message-----\nFrom: 吉田先生\n>古い指示");
+    expect(excerpt).toContain("吉田先生、確認です");
+    expect(excerpt).not.toContain("From:");
+    expect(excerpt).not.toContain("古い指示");
   });
 
   it("keeps registered names and drops blanks and one-character names", () => {
@@ -60,7 +83,7 @@ describe("needs-reply names", () => {
 
 describe("needs-reply candidates", () => {
   const names = ["吉田先生", "秀平"];
-  const sent = [{ subject: "Re: 契約書", sentOn: "2026-10-20T12:00:00" }];
+  const sent = [sentTo("Re: 契約書", "2026-10-20T12:00:00", ["sato@example.com"])];
 
   it("keeps unreplied To mail and name mentions, including a mailing list", () => {
     const picked = selectCandidates({
@@ -71,6 +94,7 @@ describe("needs-reply candidates", () => {
           subject: "契約書",
           inTo: true,
           outlookReplied: false,
+          fromAddress: "sato@example.com",
           receivedOn: "2026-10-20T08:00:00",
         }),
         mail({
@@ -125,25 +149,81 @@ describe("needs-reply candidates", () => {
     expect(picked[0].reasons).toEqual(["to", "name"]);
   });
 
-  it("treats a later sent item with the same subject as a reply", () => {
+  it("treats a later sent item with the same subject and sender as a reply", () => {
     const picked = selectCandidates({
-      rows: [mail({ entryId: "done", subject: "契約書", inTo: true, receivedOn: "2026-10-20T08:00:00" })],
+      rows: [mail({ entryId: "done", subject: "契約書", inTo: true, fromAddress: "sato@example.com", receivedOn: "2026-10-20T08:00:00" })],
       sent,
       names: [],
     });
     expect(picked).toEqual([]);
   });
 
-  it("does not treat an older sent item, or a forward, as the reply", () => {
+  it("matches a reply by subject and address, not by subject alone", () => {
+    const received = mail({
+      entryId: "ask",
+      subject: "[ml 123] Re: 依頼",
+      inTo: true,
+      fromAddress: "Sato <sato@example.com>",
+      receivedOn: "2026-10-20T12:00:00",
+    });
+    expect(subjectKey(received.subject)).toBe(subjectKey("FW: 依頼"));
+    const other = sentTo("Re: 依頼", "2026-10-20T13:00:00", ["other@example.com"]);
+    expect(hasSentReply(received, [other], [])).toBe(false);
+    expect(selectCandidates({ rows: [received], sent: [other], names: [] }).map((row) => row.entryId)).toEqual(["ask"]);
+
+    const listMail = mail({
+      entryId: "list",
+      subject: "議事",
+      inTo: false,
+      fromAddress: "member@example.com",
+      listAddresses: ["ml@example.com"],
+      receivedOn: "2026-10-20T12:00:00",
+    });
+    expect(hasSentReply(listMail, [sentTo("Re: [ml 9] 議事", "2026-10-20T13:00:00", ["ml@example.com"])], [])).toBe(true);
+
+    const ccOnly = mail({
+      entryId: "cc",
+      subject: "確認",
+      inTo: true,
+      fromAddress: "sato@example.com",
+      receivedOn: "2026-10-20T12:00:00",
+    });
+    expect(hasSentReply(ccOnly, [sentTo("返信: 確認", "2026-10-20T13:00:00", ["other@example.com"], ["sato@example.com"])], [])).toBe(true);
+
+    const early = mail({
+      entryId: "early",
+      subject: "依頼",
+      inTo: true,
+      fromAddress: "sato@example.com",
+      receivedOn: "2026-10-20T12:03:00",
+    });
+    expect(hasSentReply(early, [sentTo("Re: 依頼", "2026-10-20T12:00:00", ["sato@example.com"])], [])).toBe(false);
+    const skewed = mail({ ...early, entryId: "skew", receivedOn: "2026-10-20T12:00:20" });
+    expect(hasSentReply(skewed, [sentTo("Re: 依頼", "2026-10-20T12:00:00", ["sato@example.com"])], [])).toBe(true);
+
+    const replyTo = mail({
+      entryId: "reply",
+      subject: "質問",
+      inTo: true,
+      fromAddress: "other@example.com",
+      replyTo: ["desk@example.com"],
+      toAddresses: ["me@example.com"],
+      receivedOn: "2026-10-20T12:00:00",
+    });
+    expect(hasSentReply(replyTo, [sentTo("Re: 質問", "2026-10-20T13:00:00", ["desk@example.com"])], ["me@example.com"])).toBe(true);
+    expect(hasSentReply(replyTo, [sentTo("Re: 質問", "2026-10-20T13:00:00", ["me@example.com"])], ["me@example.com"])).toBe(false);
+  });
+
+  it("does not treat an older sent item, or a forward to someone else, as the reply", () => {
     const older = selectCandidates({
-      rows: [mail({ entryId: "new", subject: "契約書", inTo: true, receivedOn: "2026-10-21T08:00:00" })],
-      sent: [{ subject: "Re: 契約書", sentOn: "2026-10-18T08:00:00" }],
+      rows: [mail({ entryId: "new", subject: "契約書", inTo: true, fromAddress: "sato@example.com", receivedOn: "2026-10-21T08:00:00" })],
+      sent: [sentTo("Re: 契約書", "2026-10-18T08:00:00", ["sato@example.com"])],
       names: [],
     });
     expect(older.map((row) => row.entryId)).toEqual(["new"]);
     const forwarded = selectCandidates({
-      rows: [mail({ entryId: "fwd", subject: "契約書", inTo: true, receivedOn: "2026-10-20T08:00:00" })],
-      sent: [{ subject: "Fw: 契約書", sentOn: "2026-10-20T12:00:00" }],
+      rows: [mail({ entryId: "fwd", subject: "契約書", inTo: true, fromAddress: "sato@example.com", receivedOn: "2026-10-20T08:00:00" })],
+      sent: [sentTo("Fw: 契約書", "2026-10-20T12:00:00", ["other@example.com"])],
       names: [],
     });
     expect(forwarded.map((row) => row.entryId)).toEqual(["fwd"]);
@@ -190,6 +270,21 @@ describe("needs-reply settings the model may change", () => {
     if (!refused.ok) expect(refused.error).toContain("変えられません");
     expect(applyLlmSettings({ needsReplyDays: 3 }, { llmApiKey: "secret" }).ok).toBe(false);
     expect(applyLlmSettings({ needsReplyDays: 3 }, { needsReplyDays: "たくさん" }).ok).toBe(false);
+  });
+
+  it("saves a longer window only after the user replies to the widen question", () => {
+    const asked = JSON.stringify({ opened: true, askWider: true, ask: WIDEN_QUESTION });
+    const sameTurn = [
+      { role: "user", content: "要返信は？" },
+      { role: "tool", content: asked },
+    ];
+    expect(userAgreedToWiden(sameTurn)).toBe(false);
+    const unsolicited = planNeedsReplyDays({ saved: 3, requested: 7, agreedToWiden: false });
+    expect(unsolicited).toEqual({ searchDays: 7, persist: false, note: "この検索だけ過去7日にします" });
+    expect(userAgreedToWiden([...sameTurn, { role: "assistant", content: WIDEN_QUESTION }, { role: "user", content: "はい" }])).toBe(true);
+    const agreed = planNeedsReplyDays({ saved: 3, requested: 7, agreedToWiden: true });
+    expect(agreed).toEqual({ searchDays: 7, persist: true, note: "探す期間を7日にしました" });
+    expect(planNeedsReplyDays({ saved: 3, agreedToWiden: false })).toEqual({ searchDays: 3, persist: false, note: null });
   });
 
   it("offers the chat tool without a way to pass the server address", () => {
@@ -277,6 +372,9 @@ describe("needs-reply judge results", () => {
     });
     expect(enough.askWider).toBe(false);
     expect(enough.note).toBe("探す期間を7日にしました");
+    const cutOff = summarizeNeedsReply({ days: 3, note: null, scanned: 400, labeled, stopped: false, truncated: true });
+    expect(cutOff.askWider).toBe(false);
+    expect(cutOff.ask).toBe("");
   });
 
   it("parses a host batch and an error", () => {
@@ -316,7 +414,7 @@ describe("needs-reply collection", () => {
     expect(inboxCalls).toBe(2);
   });
 
-  it("stops scanning once the result cap is filled", async () => {
+  it("keeps the newest matches from a later batch instead of stopping at the cap", async () => {
     let inbox = 0;
     const collected = await collectNeedsReply({
       days: 3,
@@ -325,20 +423,53 @@ describe("needs-reply collection", () => {
       scan: async (request) => {
         if (request.folder === "sent") return { rows: [], scanned: 1, done: true };
         inbox += 1;
-        const start = (inbox - 1) * 2;
+        if (inbox === 1) {
+          return {
+            rows: [
+              mail({ entryId: "old1", inTo: true, receivedOn: "2026-10-18T01:00:00" }),
+              mail({ entryId: "old2", inTo: true, receivedOn: "2026-10-18T02:00:00" }),
+            ],
+            scanned: 2,
+            done: false,
+          };
+        }
         return {
           rows: [
-            mail({ entryId: `a${start}`, inTo: true, receivedOn: `2026-10-20T0${start}:00:00` }),
-            mail({ entryId: `a${start + 1}`, inTo: true, receivedOn: `2026-10-20T0${start + 1}:00:00` }),
+            mail({ entryId: "new1", inTo: true, receivedOn: "2026-10-20T09:00:00" }),
+            mail({ entryId: "new2", inTo: true, receivedOn: "2026-10-20T10:00:00" }),
           ],
           scanned: 2,
-          done: false,
+          done: true,
         };
       },
     });
-    expect(inbox).toBe(1);
-    expect(collected.stopped).toBe(false);
-    expect(collected.candidates).toHaveLength(2);
+    expect(inbox).toBe(2);
+    expect(collected.candidates.map((row) => row.entryId)).toEqual(["new2", "new1"]);
+  });
+
+  it("starts each folder with reset and does not reuse the token for the next search", async () => {
+    const calls: Array<{ folder: string; reset: boolean; token: string }> = [];
+    const scan = async (request: { folder: string; reset: boolean; token: string }) => {
+      calls.push({ folder: request.folder, reset: request.reset, token: request.token });
+      if (request.folder === "sent") return { rows: [], scanned: 1, done: true };
+      if (request.reset) return { rows: [mail({ entryId: "a", inTo: true })], scanned: 1, done: false };
+      return { rows: [], scanned: 1, done: true };
+    };
+    await collectNeedsReply({ days: 3, names: [], scan, limits: { maxMs: 60_000, maxScan: 10 } });
+    const first = calls.splice(0, calls.length);
+    await collectNeedsReply({ days: 3, names: [], scan, limits: { maxMs: 60_000, maxScan: 10 } });
+    const sent = first.filter((row) => row.folder === "sent");
+    const inbox = first.filter((row) => row.folder === "inbox");
+    expect(sent[0].reset).toBe(true);
+    expect(inbox[0].reset).toBe(true);
+    expect(inbox[1].reset).toBe(false);
+    expect(inbox[0].token).toBe(inbox[1].token);
+    expect(sent[0].token).not.toBe(inbox[0].token);
+    expect(calls[0].token).not.toBe(sent[0].token);
+    expect(sent[0].token.startsWith("nr")).toBe(true);
+    expect(sent[0].token.length).toBeGreaterThan(12);
+    const minted = new Set(Array.from({ length: 20 }, () => createNeedsReplyToken()));
+    expect(minted.size).toBe(20);
   });
 
   it("does not keep calling the host after the time budget", async () => {

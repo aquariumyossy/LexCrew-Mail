@@ -84,6 +84,7 @@ export function systemPrompt(options?: {
     "find_needs_reply の days は探す日数だけを変える。省略すると設定の日数のままである。アドレス、鍵、モデル名は変えられない。",
     "期間の指定が無いときは days を省略する。",
     `結果の askWider が true のときは「${WIDEN_QUESTION}」と尋ねる。利用者が同意したときだけ、今より大きい days でもう一度呼ぶ。同意の前に期間を広げない。`,
+    "設定より大きい days を保存できるのは、直前の結果の askWider が true で、そのあと利用者が返信したときだけである。それ以外の大きい days はその検索だけに使い、設定は変えない。",
     "find_needs_reply の結果にメール本文はない。この結果をメモに残さない。",
     todayLine(now),
   ];

@@ -1,13 +1,29 @@
 using System;
+using System.Globalization;
+using System.Threading;
 using KuruOutlook;
 
 class NeedsReplyTest
 {
     static int Main()
     {
-        string filter = NeedsReplyRules.RestrictSince("[ReceivedTime]", new DateTime(2026, 10, 18, 9, 30, 0));
+        var culture = (CultureInfo)CultureInfo.InvariantCulture.Clone();
+        culture.DateTimeFormat.DateSeparator = ".";
+        culture.DateTimeFormat.TimeSeparator = ".";
+        CultureInfo previous = Thread.CurrentThread.CurrentCulture;
+        Thread.CurrentThread.CurrentCulture = culture;
+        string filter;
+        string sent;
+        try
+        {
+            filter = NeedsReplyRules.RestrictSince("[ReceivedTime]", new DateTime(2026, 10, 18, 9, 30, 0));
+            sent = NeedsReplyRules.RestrictSince("[SentOn]", new DateTime(2026, 10, 1, 0, 0, 0));
+        }
+        finally
+        {
+            Thread.CurrentThread.CurrentCulture = previous;
+        }
         Expect(filter, "[ReceivedTime] >= '2026/10/18 09:30'");
-        string sent = NeedsReplyRules.RestrictSince("[SentOn]", new DateTime(2026, 10, 1, 0, 0, 0));
         Expect(sent, "[SentOn] >= '2026/10/01 00:00'");
 
         if (!NeedsReplyRules.IsReplyVerb(102) || !NeedsReplyRules.IsReplyVerb(103))
@@ -31,6 +47,17 @@ class NeedsReplyTest
         {
             throw new Exception("cap");
         }
+        Expect(NeedsReplyRules.NextSession(true, true, true), "restart");
+        Expect(NeedsReplyRules.NextSession(false, true, true), "continue");
+        Expect(NeedsReplyRules.NextSession(false, true, false), "stale");
+        Expect(NeedsReplyRules.NextSession(false, false, false), "stale");
+
+        string headers = "From: a@b.c\r\nList-Post: <mailto:ml@example.com> (post)\r\nList-Id: Example <ml.example.com>\r\nReply-To:\r\n Sender@Example.com\r\nSubject: hi\r\n";
+        var posted = NeedsReplyRules.HeaderSmtps(headers, "List-Post");
+        if (posted.Count != 1 || posted[0] != "ml@example.com") throw new Exception("list-post");
+        var replyTo = NeedsReplyRules.HeaderSmtps(headers, "Reply-To");
+        if (replyTo.Count != 1 || replyTo[0] != "sender@example.com") throw new Exception("reply-to");
+        if (NeedsReplyRules.HeaderSmtps(headers, "List-Id").Count != 0) throw new Exception("list-id without smtp");
         return 0;
     }
 
