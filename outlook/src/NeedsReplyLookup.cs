@@ -436,11 +436,14 @@ namespace KuruOutlook
             return from;
         }
 
+        /// <summary>
+        /// MAPI PR_BODY only. MailItem.Body is never read, because Outlook may mark the item read.
+        /// An empty or failed read stays empty; names are then matched on the subject alone.
+        /// </summary>
         static string BodyOf(dynamic item)
         {
             string text = Mapi(item, BodyWideTag);
             if (text.Length == 0) text = Mapi(item, BodyAnsiTag);
-            if (text.Length == 0) text = Read(() => Convert.ToString(item.Body));
             return SentSearch.PlainPreface(text);
         }
 

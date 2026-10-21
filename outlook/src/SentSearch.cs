@@ -195,8 +195,9 @@ namespace KuruOutlook
         }
 
         /// <summary>
-        /// Quote markers count only at the start of a line, after optional whitespace and dashes.
-        /// A mid-line 「差出人」 or "from:" does not cut the text.
+        /// A quoted original starts at a separator line (Original Message / 元のメッセージ,
+        /// alone or wrapped in dashes), or at a line-start 差出人: / From: when 送信日時: / Sent: / Date:
+        /// begins one of the next four lines. A sentence that merely contains those words is kept.
         /// </summary>
         static int EarliestPlain(string plain)
         {
@@ -204,6 +205,8 @@ namespace KuruOutlook
             {
                 return -1;
             }
+            var starts = new List<int>();
+            var ends = new List<int>();
             int i = 0;
             int lineStart = 0;
             while (i <= plain.Length)
@@ -211,10 +214,8 @@ namespace KuruOutlook
                 bool boundary = i == plain.Length || plain[i] == '\n' || plain[i] == '\r';
                 if (boundary)
                 {
-                    if (LineStartsQuote(plain, lineStart, i))
-                    {
-                        return lineStart;
-                    }
+                    starts.Add(lineStart);
+                    ends.Add(i);
                     if (i == plain.Length)
                     {
                         break;
@@ -229,25 +230,87 @@ namespace KuruOutlook
                 }
                 i++;
             }
+            for (int n = 0; n < starts.Count; n++)
+            {
+                if (SeparatorQuote(plain, starts[n], ends[n]))
+                {
+                    return starts[n];
+                }
+                if (ReplyHeader(plain, starts[n], ends[n]) && HasDateHeaderSoon(plain, starts, ends, n + 1))
+                {
+                    return starts[n];
+                }
+            }
             return -1;
         }
 
-        static bool LineStartsQuote(string text, int start, int end)
+        static bool SeparatorQuote(string text, int start, int end)
+        {
+            int i = SkipSpace(text, start, end);
+            bool dashed = false;
+            if (i < end && text[i] == '-')
+            {
+                while (i < end && text[i] == '-')
+                {
+                    i++;
+                }
+                i = SkipSpace(text, i, end);
+                dashed = true;
+            }
+            string marker = null;
+            if (RegionStarts(text, i, end, "Original Message", true))
+            {
+                marker = "Original Message";
+            }
+            else if (RegionStarts(text, i, end, "元のメッセージ", false))
+            {
+                marker = "元のメッセージ";
+            }
+            if (marker == null)
+            {
+                return false;
+            }
+            i = SkipSpace(text, i + marker.Length, end);
+            if (!dashed)
+            {
+                return i == end;
+            }
+            if (i >= end || text[i] != '-')
+            {
+                return false;
+            }
+            while (i < end && text[i] == '-')
+            {
+                i++;
+            }
+            return SkipSpace(text, i, end) == end;
+        }
+
+        static bool ReplyHeader(string text, int start, int end)
         {
             int head = SkipSpace(text, start, end);
-            int dashes = head;
-            while (dashes < end && text[dashes] == '-')
+            return HeaderName(text, head, end, "差出人") || HeaderName(text, head, end, "From");
+        }
+
+        static bool DateHeader(string text, int start, int end)
+        {
+            int head = SkipSpace(text, start, end);
+            return HeaderName(text, head, end, "送信日時") || HeaderName(text, head, end, "Sent") || HeaderName(text, head, end, "Date");
+        }
+
+        static bool HasDateHeaderSoon(string text, List<int> starts, List<int> ends, int from)
+        {
+            int last = from + 4;
+            if (last > starts.Count)
             {
-                dashes++;
+                last = starts.Count;
             }
-            int afterDash = SkipSpace(text, dashes, end);
-            if (RegionStarts(text, afterDash, end, "Original Message", true) || RegionStarts(text, afterDash, end, "元のメッセージ", false))
+            for (int n = from; n < last; n++)
             {
-                return true;
-            }
-            if (HeaderName(text, head, end, "差出人") || HeaderName(text, head, end, "From"))
-            {
-                return true;
+                if (DateHeader(text, starts[n], ends[n]))
+                {
+                    return true;
+                }
             }
             return false;
         }

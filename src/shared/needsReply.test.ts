@@ -63,6 +63,9 @@ describe("needs-reply names", () => {
     expect(mentionsName("𠮷田先生", ">吉田先生", ["吉田先生"])).toBe(true);
     expect(mentionsName("別件", ">吉田先生\n吉田先生、質問があります", ["吉田先生"])).toBe(true);
     expect(mentionsName("別件", ">吉田先生", ["吉田先生"])).toBe(false);
+  });
+
+  it("keeps a name in 内容証明の差出人 and in a mid-sentence from", () => {
     expect(mentionsName("件名", "内容証明の差出人は吉田先生です", ["吉田先生"])).toBe(true);
     expect(mentionsName("件名", "本文の途中 from: 吉田先生 への連絡", ["吉田先生"])).toBe(true);
     expect(mentionsName("無関係", ">吉田先生\n>from: 吉田先生", names)).toBe(false);
@@ -212,7 +215,9 @@ describe("needs-reply candidates", () => {
     });
     expect(hasSentReply(replyTo, [sentTo("Re: 質問", "2026-10-20T13:00:00", ["desk@example.com"])], ["me@example.com"])).toBe(true);
     expect(hasSentReply(replyTo, [sentTo("Re: 質問", "2026-10-20T13:00:00", ["me@example.com"])], ["me@example.com"])).toBe(false);
+  });
 
+  it("stays unreplied when a forward or reply goes only to a Cc colleague", () => {
     const client = mail({
       entryId: "client",
       subject: "見積",
@@ -303,19 +308,10 @@ describe("needs-reply settings the model may change", () => {
 
   it("saves a longer window only after an affirmative reply to the latest widen question", () => {
     const asked = JSON.stringify({ opened: true, askWider: true, ask: WIDEN_QUESTION });
-    const closed = JSON.stringify({ opened: true, askWider: false, ask: "" });
     const sameTurn = [
       { role: "user", content: "要返信は？" },
       { role: "tool", content: asked },
     ];
-    expect(userAgreedToWiden(sameTurn)).toBe(false);
-    expect(widenAskPending(sameTurn)).toBe(true);
-    expect(planNeedsReplyDays({ saved: 3, requested: 7, agreedToWiden: false, pendingAsk: true })).toEqual({
-      searchDays: 3,
-      persist: false,
-      note: null,
-      error: "同意の前に期間は広げられません。",
-    });
     expect(planNeedsReplyDays({ saved: 3, requested: 7, agreedToWiden: false, pendingAsk: false })).toEqual({
       searchDays: 7,
       persist: false,
@@ -332,11 +328,45 @@ describe("needs-reply settings the model may change", () => {
       error: null,
     });
     expect(planNeedsReplyDays({ saved: 3, agreedToWiden: false })).toEqual({ searchDays: 3, persist: false, note: null, error: null });
+  });
+
+  it("refuses a longer window in the same turn as the widen question", () => {
+    const asked = JSON.stringify({ opened: true, askWider: true, ask: WIDEN_QUESTION });
+    const sameTurn = [
+      { role: "user", content: "要返信は？" },
+      { role: "tool", content: asked },
+    ];
+    expect(userAgreedToWiden(sameTurn)).toBe(false);
+    expect(widenAskPending(sameTurn)).toBe(true);
+    expect(planNeedsReplyDays({ saved: 3, requested: 7, agreedToWiden: false, pendingAsk: true })).toEqual({
+      searchDays: 3,
+      persist: false,
+      note: null,
+      error: "同意の前に期間は広げられません。",
+    });
+    expect(widenAskPending([{ role: "tool", content: asked }])).toBe(false);
+  });
+
+  it("does not treat a refusal or an unrelated reply as consent to widen", () => {
+    const asked = JSON.stringify({ opened: true, askWider: true, ask: WIDEN_QUESTION });
+    const sameTurn = [
+      { role: "user", content: "要返信は？" },
+      { role: "tool", content: asked },
+    ];
     for (const reply of ["いいえ", "やめて", "契約書の件です"]) {
       const refused = [...sameTurn, { role: "user", content: reply }];
       expect(userAgreedToWiden(refused)).toBe(false);
       expect(widenAskPending(refused)).toBe(false);
     }
+  });
+
+  it("lets an older widen question expire", () => {
+    const asked = JSON.stringify({ opened: true, askWider: true, ask: WIDEN_QUESTION });
+    const closed = JSON.stringify({ opened: true, askWider: false, ask: "" });
+    const sameTurn = [
+      { role: "user", content: "要返信は？" },
+      { role: "tool", content: asked },
+    ];
     const expired = [
       ...sameTurn,
       { role: "user", content: "はい" },
@@ -348,7 +378,9 @@ describe("needs-reply settings the model may change", () => {
     const askedAgain = [...sameTurn, { role: "user", content: "はい" }, { role: "tool", content: asked }];
     expect(userAgreedToWiden(askedAgain)).toBe(false);
     expect(widenAskPending(askedAgain)).toBe(true);
-    expect(widenAskPending([{ role: "tool", content: asked }])).toBe(false);
+  });
+
+  it("still saves a shorter window while a widen question is pending", () => {
     expect(planNeedsReplyDays({ saved: 7, requested: 3, agreedToWiden: false, pendingAsk: true })).toEqual({
       searchDays: 3,
       persist: true,

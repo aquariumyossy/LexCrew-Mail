@@ -9,6 +9,7 @@
     "dev-server": "tsx src/server.ts",
     "build": "webpack --mode production",
     "test": "vitest run",
+    "test:cs": "node scripts/test-cs.js",
     "certs": "office-addin-dev-certs install",
     "package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1",
     "package:x86": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1 -Platform x86"
