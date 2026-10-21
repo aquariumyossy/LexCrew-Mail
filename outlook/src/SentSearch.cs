@@ -197,7 +197,9 @@ namespace KuruOutlook
         /// <summary>
         /// A quoted original starts at a separator line (Original Message / 元のメッセージ,
         /// alone or wrapped in dashes), or at a line-start 差出人: / From: when 送信日時: / Sent: / Date:
-        /// begins one of the next four lines. A sentence that merely contains those words is kept.
+        /// begins one of the next four lines. A line-start 差出人: is also a quote when 日付:
+        /// and either 宛先: or 件名: begin lines in that same window (iPhone / Mac Japanese Mail).
+        /// 差出人: with only 日付: is kept. A sentence that merely contains those words is kept.
         /// </summary>
         static int EarliestPlain(string plain)
         {
@@ -237,6 +239,10 @@ namespace KuruOutlook
                     return starts[n];
                 }
                 if (ReplyHeader(plain, starts[n], ends[n]) && HasDateHeaderSoon(plain, starts, ends, n + 1))
+                {
+                    return starts[n];
+                }
+                if (JapaneseSenderHeader(plain, starts[n], ends[n]) && HasAppleJapaneseHeadersSoon(plain, starts, ends, n + 1))
                 {
                     return starts[n];
                 }
@@ -313,6 +319,36 @@ namespace KuruOutlook
                 }
             }
             return false;
+        }
+
+        static bool JapaneseSenderHeader(string text, int start, int end)
+        {
+            int head = SkipSpace(text, start, end);
+            return HeaderName(text, head, end, "差出人");
+        }
+
+        static bool HasAppleJapaneseHeadersSoon(string text, List<int> starts, List<int> ends, int from)
+        {
+            int last = from + 4;
+            if (last > starts.Count)
+            {
+                last = starts.Count;
+            }
+            bool date = false;
+            bool partyOrSubject = false;
+            for (int n = from; n < last; n++)
+            {
+                int head = SkipSpace(text, starts[n], ends[n]);
+                if (HeaderName(text, head, ends[n], "日付"))
+                {
+                    date = true;
+                }
+                if (HeaderName(text, head, ends[n], "宛先") || HeaderName(text, head, ends[n], "件名"))
+                {
+                    partyOrSubject = true;
+                }
+            }
+            return date && partyOrSubject;
         }
 
         static int SkipSpace(string text, int index, int end)

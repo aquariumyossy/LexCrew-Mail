@@ -102,6 +102,28 @@ class SentSearchTest
         SentSearch.SplitBodies("", notice, 1200, 800, out excerpt, out prior);
         Expect(excerpt, notice);
         Expect(prior, "");
+        string noticeDate = "差出人：株式会社X\n日付：2026年10月18日\n吉田先生、内容をご確認ください";
+        Expect(SentSearch.PlainPreface(noticeDate), noticeDate);
+        SentSearch.SplitBodies("", noticeDate, 1200, 800, out excerpt, out prior);
+        Expect(excerpt, noticeDate);
+        Expect(prior, "");
+        string iphone = "お世話になっております。\n差出人: 山田太郎 <yamada@example.com>\n日付: 2026年10月18日 9:30\n宛先: 自分 <me@example.com>\n件名: ご依頼\n\n吉田先生、古い本文です";
+        string iphonePreface = SentSearch.PlainPreface(iphone);
+        ExpectContains(iphonePreface, "お世話になっております。");
+        if (iphonePreface.IndexOf("吉田先生") >= 0 || iphonePreface.IndexOf("差出人") >= 0 || iphonePreface.IndexOf("日付") >= 0)
+        {
+            throw new Exception("iPhone Japanese header stayed in the preface: " + iphonePreface);
+        }
+        SentSearch.SplitBodies("", iphone, 1200, 800, out excerpt, out prior);
+        Expect(excerpt, "お世話になっております。");
+        ExpectContains(prior, "差出人");
+        string mac = "確認しました。\n差出人: 山田太郎 <yamada@example.com>\n件名: 会議の件\n日付: 2026年10月18日 9:30:00 JST\n宛先: 自分 <me@example.com>\n\n吉田先生、古い本文です";
+        string macPreface = SentSearch.PlainPreface(mac);
+        ExpectContains(macPreface, "確認しました。");
+        if (macPreface.IndexOf("吉田先生") >= 0 || macPreface.IndexOf("差出人") >= 0 || macPreface.IndexOf("件名") >= 0)
+        {
+            throw new Exception("Mac Japanese header stayed in the preface: " + macPreface);
+        }
         string travel = "From: 東京 To: 大阪";
         Expect(SentSearch.PlainPreface(travel), travel);
         SentSearch.SplitBodies("", "From: 東京 To: 大阪\n明日出発します", 1200, 800, out excerpt, out prior);

@@ -1,7 +1,9 @@
 // Compiles and runs outlook/src/*.test.cs.
-// Windows uses the .NET Framework csc that package.ps1 uses, when WebView2
-// packages are present. Otherwise it uses the dotnet SDK (LangVersion 5) and
-// outlook/test/Stubs.cs. npm test does not run this. package.ps1 still omits *.test.cs.
+// Uses the .NET Framework csc that package.ps1 uses only when that csc and the
+// WebView2 package are both present. Otherwise uses the dotnet SDK (LangVersion 5)
+// and outlook/test/Stubs.cs. If neither is available, exits with a message.
+// The temp directory is removed after the run.
+// npm test does not run this. package.ps1 still omits *.test.cs.
 const { spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -41,6 +43,12 @@ function frameworkCsc() {
     path.join(windir, "Microsoft.NET", "Framework", "v4.0.30319", "csc.exe"),
   ];
   return candidates.find((item) => fs.existsSync(item)) || null;
+}
+
+function webviewReady() {
+  const core = path.join(webview, "lib", "net462", "Microsoft.Web.WebView2.Core.dll");
+  const winforms = path.join(webview, "lib", "net462", "Microsoft.Web.WebView2.WinForms.dll");
+  return fs.existsSync(core) && fs.existsSync(winforms);
 }
 
 function dotnetExe() {
@@ -139,8 +147,21 @@ function compileWithCsc(csc, outDir) {
   return "csc " + csc;
 }
 
-function compileWithDotnet(outDir) {
+function dotnetWorks() {
   const dotnet = dotnetExe();
+  const result = spawnSync(dotnet, ["--version"], {
+    encoding: "utf8",
+    env: Object.assign({}, process.env, {
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1",
+      DOTNET_NOLOGO: "1",
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1",
+    }),
+  });
+  if (result.status !== 0) return null;
+  return dotnet;
+}
+
+function compileWithDotnet(dotnet, outDir) {
   const env = {
     DOTNET_CLI_TELEMETRY_OPTOUT: "1",
     DOTNET_NOLOGO: "1",
@@ -169,10 +190,21 @@ function compileWithDotnet(outDir) {
 function main() {
   const tests = testFiles();
   if (!tests.length) throw new Error("outlook/src/*.test.cs がありません");
-  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "kuru-cs-"));
   const csc = frameworkCsc();
-  const how = csc ? compileWithCsc(csc, outDir) : compileWithDotnet(outDir);
-  process.stdout.write(tests.length + " C# tests passed with " + how + "\n");
+  const useCsc = Boolean(csc && webviewReady());
+  const dotnet = useCsc ? null : dotnetWorks();
+  if (!useCsc && !dotnet) {
+    throw new Error(
+      "C# のテストを実行できません。WebView2 パッケージと .NET Framework の csc が両方あるときは csc、それ以外は dotnet SDK を使います。どちらも見つかりません。"
+    );
+  }
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "kuru-cs-"));
+  try {
+    const how = useCsc ? compileWithCsc(csc, outDir) : compileWithDotnet(dotnet, outDir);
+    process.stdout.write(tests.length + " C# tests passed with " + how + "\n");
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
 }
 
 try {

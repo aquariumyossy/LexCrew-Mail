@@ -18,7 +18,9 @@ import {
   normalizeNeedsReplyNames,
   parseJudgeResult,
   parseScanBatch,
+  planNeedsReplyButtonDays,
   planNeedsReplyDays,
+  widenConsent,
   progressText,
   selectCandidates,
   subjectKey,
@@ -426,6 +428,12 @@ describe("needs-reply settings the model may change", () => {
     "OKじゃない",
     "はい？どういう意味",
     "お願いだからやめて",
+    "はい、必要ありません",
+    "はい、不要です",
+    "はい、今回は見送ります",
+    "はい、大丈夫です",
+    "お願いしません",
+    "OK, no thanks",
   ]) {
     it(`does not treat 「${reply}」 as consent to widen`, () => {
       const asked = JSON.stringify({ opened: true, askWider: true, ask: WIDEN_QUESTION });
@@ -438,6 +446,175 @@ describe("needs-reply settings the model may change", () => {
       expect(widenAskPending(messages)).toBe(false);
     });
   }
+
+  for (const reply of ["はい、お願いします", "探してください", "OK"]) {
+    it(`treats the whole reply 「${reply}」 as consent to widen`, () => {
+      const asked = JSON.stringify({ opened: true, askWider: true, days: 3, ask: WIDEN_QUESTION });
+      const messages = [
+        { role: "user", content: "要返信は？" },
+        { role: "tool", content: asked },
+        { role: "user", content: reply },
+      ];
+      expect(userAgreedToWiden(messages)).toBe(true);
+      expect(widenAskPending(messages)).toBe(false);
+    });
+  }
+
+  it("uses the latest reply, so はい then やっぱりやめといて is not consent", () => {
+    const asked = JSON.stringify({ opened: true, askWider: true, days: 3, ask: WIDEN_QUESTION });
+    const messages = [
+      { role: "user", content: "要返信は？" },
+      { role: "tool", content: asked },
+      { role: "user", content: "はい" },
+      { role: "user", content: "やっぱりやめといて" },
+    ];
+    expect(userAgreedToWiden(messages)).toBe(false);
+    expect(widenAskPending(messages)).toBe(false);
+  });
+
+  it("keeps days named in chat on this search while a widen question is open", () => {
+    const asked = JSON.stringify({ opened: true, askWider: true, days: 14, ask: WIDEN_QUESTION });
+    const messages = [
+      { role: "user", content: "要返信は？" },
+      { role: "tool", content: asked },
+      { role: "user", content: "1日だけ見て" },
+    ];
+    const consent = widenConsent(messages);
+    expect(consent.agreed).toBe(false);
+    expect(planNeedsReplyDays({
+      saved: 14,
+      requested: 1,
+      askedDays: consent.askedDays,
+      agreedToWiden: consent.agreed,
+      pendingAsk: true,
+    })).toEqual({
+      searchDays: 1,
+      persist: false,
+      note: "この検索だけ過去1日にします",
+      error: null,
+    });
+  });
+
+  it("does not shrink the saved window when a one-off search is widened after yes", () => {
+    const asked = JSON.stringify({ opened: true, askWider: true, days: 1, ask: WIDEN_QUESTION });
+    const messages = [
+      { role: "user", content: "今日の未返信" },
+      { role: "tool", content: asked },
+      { role: "user", content: "はい" },
+    ];
+    const consent = widenConsent(messages);
+    expect(consent.agreed).toBe(true);
+    expect(consent.askedDays).toBe(1);
+    expect(planNeedsReplyDays({
+      saved: 14,
+      requested: 7,
+      askedDays: consent.askedDays,
+      agreedToWiden: consent.agreed,
+      pendingAsk: consent.pending,
+    })).toEqual({
+      searchDays: 7,
+      persist: false,
+      note: "この検索だけ過去7日にします",
+      error: null,
+    });
+  });
+
+  it("refuses a same-turn widen after a one-off short search", () => {
+    const asked = JSON.stringify({ opened: true, askWider: true, days: 1, ask: WIDEN_QUESTION });
+    const messages = [
+      { role: "user", content: "今日の未返信" },
+      { role: "tool", content: asked },
+    ];
+    const consent = widenConsent(messages);
+    expect(consent.pending).toBe(true);
+    expect(consent.agreed).toBe(false);
+    expect(consent.askedDays).toBe(1);
+    expect(planNeedsReplyDays({
+      saved: 14,
+      requested: 7,
+      askedDays: consent.askedDays,
+      agreedToWiden: consent.agreed,
+      pendingAsk: consent.pending,
+    })).toEqual({
+      searchDays: 1,
+      persist: false,
+      note: null,
+      error: "同意の前に期間は広げられません。",
+    });
+    const afterRefusal = [...messages, { role: "tool", content: "エラー: 同意の前に期間は広げられません。" }];
+    expect(widenAskPending(afterRefusal)).toBe(true);
+    expect(widenConsent(afterRefusal).askedDays).toBe(1);
+  });
+
+  it("refuses a same-turn widen when days are omitted after a one-off short search", () => {
+    const asked = JSON.stringify({ opened: true, askWider: true, days: 1, ask: WIDEN_QUESTION });
+    const consent = widenConsent([
+      { role: "user", content: "今日の未返信" },
+      { role: "tool", content: asked },
+    ]);
+    expect(consent.pending).toBe(true);
+    expect(planNeedsReplyDays({
+      saved: 14,
+      askedDays: consent.askedDays,
+      agreedToWiden: consent.agreed,
+      pendingAsk: consent.pending,
+    })).toEqual({
+      searchDays: 1,
+      persist: false,
+      note: null,
+      error: "同意の前に期間は広げられません。",
+    });
+  });
+
+  it("does not let the list button shrink 14 to 7 after a one-off 1-day search", () => {
+    expect(widerDays(1)).toBe(7);
+    expect(planNeedsReplyButtonDays(14, 7)).toEqual({
+      searchDays: 7,
+      persist: false,
+      note: "この検索だけ過去7日にします",
+    });
+    expect(planNeedsReplyButtonDays(3, 7)).toEqual({
+      searchDays: 7,
+      persist: true,
+      note: "探す期間を7日にしました",
+    });
+  });
+
+  it("does not keep consent after an error, so a later one-day search is not saved", () => {
+    const asked = JSON.stringify({ opened: true, askWider: true, days: 1, ask: WIDEN_QUESTION });
+    const afterError = [
+      { role: "user", content: "今日の未返信" },
+      { role: "tool", content: asked },
+      { role: "user", content: "はい" },
+      { role: "tool", content: "エラー: 検索に失敗しました。" },
+    ];
+    const closed = widenConsent(afterError);
+    expect(closed.agreed).toBe(false);
+    expect(closed.pending).toBe(false);
+    expect(closed.askedDays).toBe(null);
+    expect(planNeedsReplyDays({
+      saved: 3,
+      requested: 7,
+      askedDays: closed.askedDays,
+      agreedToWiden: closed.agreed,
+      pendingAsk: closed.pending,
+    }).persist).toBe(false);
+    const later = [...afterError, { role: "user", content: "今日の未返信だけ" }];
+    const consent = widenConsent(later);
+    expect(consent.agreed).toBe(false);
+    expect(planNeedsReplyDays({
+      saved: 14,
+      requested: 1,
+      askedDays: consent.askedDays,
+      agreedToWiden: consent.agreed,
+      pendingAsk: consent.pending,
+    })).toEqual({
+      searchDays: 1,
+      persist: false,
+      note: "この検索だけ過去1日にします",
+      error: null,
+    });
+  });
 
   it("offers the chat tool without a way to pass the server address", () => {
     const tool = buildTools({ searxng: false, argos: false }).find((item) => item.function.name === TOOL_FIND_NEEDS_REPLY);

@@ -107,7 +107,7 @@ Outlook（COM アドイン） ── window.kuru ──► 作業ウィンドウ
 npm install
 npm run dev-server    # 開発用 HTTPS + webpack（https://127.0.0.1:28770）
 npm test              # Vitest。C# のテストは含まない
-npm run test:cs       # outlook/src/*.test.cs をコンパイルして実行する。Windows では .NET Framework の csc、無いときは dotnet。パッケージには入れない
+npm run test:cs       # outlook/src/*.test.cs をコンパイルして実行する。WebView2 パッケージと .NET Framework の csc が両方あるときだけ csc、それ以外は dotnet。どちらも無ければ理由を出して終わる。一時ディレクトリは消す。パッケージには入れない
 npm run build         # フロントを dist/ にビルド
 npm run package       # release/ にインストーラ一式を生成（要 Windows）
 npm run package:x86   # 32 ビット版 Outlook 向けの配布物を release/ に生成

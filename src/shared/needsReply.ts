@@ -101,11 +101,13 @@ export type NeedsReplySummary = {
 const QUOTED_LINE = /^\s*[>＞]/;
 const SUBJECT_PREFIX = /^(?:re|fw|fwd|返信|転送)\s*[:：]\s*/i;
 const LIST_TAG = /^\[[^\]\n]{1,80}\]\s*/;
-/** A reply to 「もっと前のメールも探しましょうか？」. A refusal or another topic does not match. */
-const AFFIRMATIVE = /^(?:はい|お願い|探して|うん|(?:okay|ok|yes)\b)/i;
-/** A leading yes is not consent when the rest refuses or asks what was meant. */
-const CONSENT_NEGATION = /ないで|なくて|じゃない|いらない|ない|やめ|結構/;
-const CONSENT_QUESTION = /[?？]/;
+/**
+ * Consent is the whole reply, not a prefix. Only these short affirmatives,
+ * alone or joined by punctuation, with an optional polite tail such as です.
+ */
+const CONSENT_WORDS = new Set(["はい", "お願いします", "探してください", "お願い", "うん", "ok", "yes"]);
+const CONSENT_SPLIT = /[\s、,，.。．!！・…~〜ー－\-]+/u;
+const CONSENT_POLITE = /(?:です|ます)(?:ね|よ)?$|(?:ね|よ)$/u;
 const HONORIFIC = /(?:先生|さん|様|君|殿)$/u;
 const YOSHI = /\u{20BB7}/gu;
 
@@ -166,25 +168,27 @@ export function applyLlmSettings(
   return { ok: true, needsReplyDays: changed.days, note: changed.note };
 }
 
-type WidenConsent = { agreed: boolean; pending: boolean };
+type WidenConsent = { agreed: boolean; pending: boolean; askedDays: number | null };
 
 /**
  * Consent counts only for the latest widen question.
- * It must follow an earlier user message, and the reply after it must be affirmative.
+ * It must follow an earlier user message, and the latest reply after it must be affirmative.
+ * askedDays is the days field of that question's result.
  * A later needs-reply result that does not ask again expires the older question.
+ * An error result after the user has already replied expires it too.
  * No reply yet means the question is still pending (the model must not widen in that same turn).
  */
 export function widenConsent(messages: Array<{ role?: string; content?: string }>): WidenConsent {
-  const askAt = latestWidenAsk(messages);
-  if (askAt < 0) return { agreed: false, pending: false };
+  const ask = latestWidenAsk(messages);
+  if (!ask) return { agreed: false, pending: false, askedDays: null };
   let previousUser = false;
-  for (let i = 0; i < askAt; i += 1) {
+  for (let i = 0; i < ask.index; i += 1) {
     if (userText(messages[i])) previousUser = true;
   }
-  if (!previousUser) return { agreed: false, pending: false };
-  const reply = firstUserAfter(messages, askAt);
-  if (!reply) return { agreed: false, pending: true };
-  return { agreed: isAffirmative(reply), pending: false };
+  if (!previousUser) return { agreed: false, pending: false, askedDays: null };
+  const reply = latestUserAfter(messages, ask.index);
+  if (!reply) return { agreed: false, pending: true, askedDays: ask.days };
+  return { agreed: isAffirmative(reply), pending: false, askedDays: ask.days };
 }
 
 export function userAgreedToWiden(messages: Array<{ role?: string; content?: string }>): boolean {
@@ -195,25 +199,40 @@ export function widenAskPending(messages: Array<{ role?: string; content?: strin
   return widenConsent(messages).pending;
 }
 
-function latestWidenAsk(messages: Array<{ role?: string; content?: string }>): number {
+function latestWidenAsk(messages: Array<{ role?: string; content?: string }>): { index: number; days: number | null } | null {
   let latest = -1;
+  let days: number | null = null;
+  let userAfter = false;
   for (let i = 0; i < messages.length; i += 1) {
     const row = messages[i];
-    if (!row || row.role !== "tool" || typeof row.content !== "string") continue;
+    if (!row) continue;
+    if (latest >= 0 && userText(row)) userAfter = true;
+    if (row.role !== "tool" || typeof row.content !== "string") continue;
     const kind = toolWidenKind(row.content);
-    if (kind === "ask") latest = i;
-    else if (kind === "closed") latest = -1;
+    if (kind.kind === "ask") {
+      latest = i;
+      days = kind.days;
+      userAfter = false;
+    } else if (kind.kind === "closed" || (kind.kind === "error" && userAfter)) {
+      latest = -1;
+      days = null;
+      userAfter = false;
+    }
   }
-  return latest;
+  if (latest < 0) return null;
+  return { index: latest, days };
 }
 
-function toolWidenKind(content: string): "ask" | "closed" | "other" {
+function toolWidenKind(content: string): { kind: "ask" | "closed" | "error" | "other"; days: number | null } {
+  const text = content.trim();
+  if (text.startsWith("エラー")) return { kind: "error", days: null };
   try {
-    const parsed = JSON.parse(content) as { opened?: unknown; askWider?: unknown };
-    if (parsed.opened !== true) return "other";
-    return parsed.askWider === true ? "ask" : "closed";
+    const parsed = JSON.parse(text) as { opened?: unknown; askWider?: unknown; days?: unknown };
+    if (parsed.opened !== true) return { kind: "other", days: null };
+    const days = typeof parsed.days === "number" && Number.isFinite(parsed.days) ? normalizeNeedsReplyDays(parsed.days) : null;
+    return { kind: parsed.askWider === true ? "ask" : "closed", days };
   } catch {
-    return "other";
+    return { kind: "other", days: null };
   }
 }
 
@@ -223,42 +242,70 @@ function userText(row: { role?: string; content?: string } | undefined): string 
   return text ? text : null;
 }
 
-function firstUserAfter(messages: Array<{ role?: string; content?: string }>, askAt: number): string | null {
+function latestUserAfter(messages: Array<{ role?: string; content?: string }>, askAt: number): string | null {
+  let found: string | null = null;
   for (let i = askAt + 1; i < messages.length; i += 1) {
     const text = userText(messages[i]);
-    if (text) return text;
+    if (text) found = text;
   }
-  return null;
+  return found;
 }
 
 function isAffirmative(text: string): boolean {
-  const folded = text.trim().normalize("NFKC");
-  if (!folded || CONSENT_QUESTION.test(folded) || CONSENT_NEGATION.test(folded)) return false;
-  return AFFIRMATIVE.test(folded);
+  const folded = text.trim().normalize("NFKC").toLowerCase();
+  if (!folded) return false;
+  const parts = folded.split(CONSENT_SPLIT).filter(Boolean);
+  if (!parts.length) return false;
+  for (const part of parts) {
+    if (CONSENT_WORDS.has(part)) continue;
+    const core = part.replace(CONSENT_POLITE, "");
+    if (core === part || !CONSENT_WORDS.has(core)) return false;
+  }
+  return true;
 }
 
 /**
- * A different window is saved only after the user agrees to the latest widen question.
- * A larger value in the same turn, before that reply, is refused.
- * Any other requested length, longer or shorter, applies to this search alone.
+ * Compare a requested window with the search that asked, not only the saved setting.
+ * While that question is pending, anything longer than askedDays is refused.
+ * Omitting days uses the saved setting for that check, so it cannot skip it.
+ * After consent, save only when the request is longer than both that search and the saved setting.
+ * Every other length, including days the user named, applies to this search alone.
  */
 export function planNeedsReplyDays(input: {
   saved: number;
   requested?: number;
+  askedDays?: number | null;
   agreedToWiden: boolean;
   pendingAsk?: boolean;
 }): { searchDays: number; persist: boolean; note: string | null; error: string | null } {
   const saved = normalizeNeedsReplyDays(input.saved);
-  if (input.requested === undefined) return { searchDays: saved, persist: false, note: null, error: null };
-  const requested = normalizeNeedsReplyDays(input.requested);
-  if (requested === saved) return { searchDays: saved, persist: false, note: null, error: null };
-  if (requested > saved && input.pendingAsk && !input.agreedToWiden) {
-    return { searchDays: saved, persist: false, note: null, error: "同意の前に期間は広げられません。" };
+  const asked = input.askedDays == null ? saved : normalizeNeedsReplyDays(input.askedDays);
+  const requested = input.requested === undefined ? undefined : normalizeNeedsReplyDays(input.requested);
+  if (input.pendingAsk && !input.agreedToWiden && (requested ?? saved) > asked) {
+    return { searchDays: asked, persist: false, note: null, error: "同意の前に期間は広げられません。" };
   }
-  if (!input.agreedToWiden) {
-    return { searchDays: requested, persist: false, note: `この検索だけ過去${requested}日にします`, error: null };
+  if (requested === undefined || requested === saved) {
+    return { searchDays: saved, persist: false, note: null, error: null };
   }
-  return { searchDays: requested, persist: true, note: daysChangedNote(requested), error: null };
+  if (input.agreedToWiden && requested > asked && requested > saved) {
+    return { searchDays: requested, persist: true, note: daysChangedNote(requested), error: null };
+  }
+  return { searchDays: requested, persist: false, note: `この検索だけ過去${requested}日にします`, error: null };
+}
+
+/**
+ * The list button saves only when the next window is longer than the saved setting.
+ * A shorter step, such as widening a one-off 1-day search toward a saved 14, stays on this search.
+ */
+export function planNeedsReplyButtonDays(
+  saved: number,
+  days: number
+): { searchDays: number; persist: boolean; note: string | null } {
+  const current = normalizeNeedsReplyDays(saved);
+  const next = normalizeNeedsReplyDays(days);
+  if (next > current) return { searchDays: next, persist: true, note: daysChangedNote(next) };
+  if (next === current) return { searchDays: current, persist: false, note: null };
+  return { searchDays: next, persist: false, note: `この検索だけ過去${next}日にします` };
 }
 
 export function widerDays(days: number): number | null {
@@ -271,7 +318,8 @@ export function widerDays(days: number): number | null {
 
 /**
  * New text only. The host already drops an Outlook quoted original
- * (Original Message, 元のメッセージ, 差出人:, From: at the start of a line).
+ * (Original Message, 元のメッセージ, or a line-start 差出人: / From: with a nearby date header,
+ * including 差出人: followed by 日付: and 宛先: or 件名:).
  * Lines that begin with ">" (or the fullwidth form, after indentation) are dropped here.
  */
 export function unquotedText(body: string): string {
