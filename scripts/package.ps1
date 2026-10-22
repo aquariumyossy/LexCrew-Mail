@@ -126,14 +126,20 @@ function Resolve-BundledNodeExe([string]$NodeCommand, [string]$VersionFile) {
     throw "PATH の node（$NodeCommand）は $($probe.Version) です。同梱できるのは Node.js $required だけです。Node.js $required をインストールし、その node.exe が PATH の先頭に来るようにしてから、もう一度実行してください。"
   }
   Assert-BundledNodeFile -ExecPath $probe.ExecPath -Required $required
-  $nodeHash = (Get-FileHash -LiteralPath $probe.ExecPath -Algorithm SHA256).Hash
+  $nodeHash = (Get-FileHash -LiteralPath $probe.ExecPath -Algorithm SHA256 -ErrorAction Stop).Hash
+  if ([string]::IsNullOrWhiteSpace($nodeHash)) {
+    throw "同梱する node.exe（$($probe.ExecPath)）の SHA-256 が空です。読み取れなかったため、同梱を中止しました。"
+  }
   return @{
     ExecPath = [string]$probe.ExecPath
     Hash = [string]$nodeHash
   }
 }
 function Assert-SameNodeHash([string]$ExpectedHash, [string]$Copied) {
-  $copiedHash = (Get-FileHash -LiteralPath $Copied -Algorithm SHA256).Hash
+  $copiedHash = (Get-FileHash -LiteralPath $Copied -Algorithm SHA256 -ErrorAction Stop).Hash
+  if ([string]::IsNullOrWhiteSpace($ExpectedHash) -or [string]::IsNullOrWhiteSpace($copiedHash)) {
+    throw "同梱した node.exe の SHA-256 が空です。確認時は $ExpectedHash、コピー先（$Copied）は $copiedHash です。"
+  }
   if ($ExpectedHash -ne $copiedHash) {
     throw "同梱した node.exe の SHA-256 が、確認したときの node.exe と一致しません。確認時は $ExpectedHash、コピー先（$Copied）は $copiedHash です。"
   }
