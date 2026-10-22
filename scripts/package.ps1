@@ -214,8 +214,8 @@ function PeMachine([string]$path) {
 }
 
 if (-not (Test-Path -LiteralPath $loader)) { throw "WebView2Loader.dll がありません: $loader" }
-if ($Platform -eq "x86" -and (PeMachine $nodeSource) -ne 0x8664) {
-  throw "PATH の node.exe が 64bit ではありません。x86 パッケージの sidecar は 64bit node のままです。"
+if ((PeMachine $nodeSource) -ne 0x8664) {
+  throw "PATH の node.exe が 64bit ではありません。x64 でも x86 でも、sidecar の node.exe は 64bit のままです。"
 }
 
 if (Test-Path $stage) { Get-ChildItem $stage -Force | Remove-Item -Recurse -Force }
