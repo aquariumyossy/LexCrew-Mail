@@ -97,7 +97,7 @@ Outlook（COM アドイン） ── window.kuru ──► 作業ウィンドウ
 
 ### 必要なもの
 
-- Node.js（パッケージ作成時は 22 系でビルド）
+- Node.js（パッケージを作るときは、リポジトリ直下の `.node-version` に書いた版を入れる。`npm ci` も `scripts/package.ps1` も、その版の `node.exe` を使う。違う版だと `package.ps1` は同梱せずに止まる）
 - .NET Framework 4.x（Outlook アドインのコンパイル）
 - Outlook 用 NuGet パッケージ（`outlook/packages`。初回は `package.ps1` 実行前に取得）
 

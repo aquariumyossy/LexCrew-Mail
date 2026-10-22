@@ -33,6 +33,117 @@ function Invoke-Esbuild([string[]]$ArgList) {
   try { $first = $stream.ReadByte() } finally { $stream.Dispose() }
   if ($first -eq 35) { & node $bin @ArgList } else { & $bin @ArgList }
 }
+function Read-RequiredNodeVersion([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) {
+    throw ".node-version がありません。同梱する Node.js の版を、リポジトリ直下の .node-version に 1 行で書いてください。"
+  }
+  $text = [System.IO.File]::ReadAllText($Path)
+  if ($text.Length -gt 0 -and [int][char]$text[0] -eq 0xFEFF) {
+    $text = $text.Substring(1)
+  }
+  $text = $text.Replace("`r`n", "`n").Replace("`r", "`n")
+  $found = @()
+  foreach ($part in @($text -split "`n")) {
+    if (-not [string]::IsNullOrWhiteSpace($part)) {
+      $found += $part.Trim()
+    }
+  }
+  if ($found.Count -ne 1) {
+    throw ".node-version には、同梱する Node.js の版を 1 行だけ書いてください。"
+  }
+  $version = [string]$found[0]
+  if ($version.StartsWith("v") -or $version.StartsWith("V")) {
+    $version = $version.Substring(1)
+  }
+  if ($version -notmatch '^\d+\.\d+\.\d+$') {
+    throw ".node-version の「$($found[0])」は版番号ではありません。メジャー、マイナー、パッチをドットで区切った 1 行にしてください。"
+  }
+  return $version
+}
+function ConvertTo-NodeVersionToken([string]$Text) {
+  $version = "$Text".Trim([char]0).Trim()
+  if ($version.StartsWith("v") -or $version.StartsWith("V")) {
+    $version = $version.Substring(1).Trim()
+  }
+  return $version
+}
+function Get-NodeRuntimeProbe([string]$NodeCommand) {
+  $previous = [Console]::OutputEncoding
+  try {
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $output = & $NodeCommand -p 'JSON.stringify({version:process.version, execPath:process.execPath})'
+    $code = $LASTEXITCODE
+  } finally {
+    [Console]::OutputEncoding = $previous
+  }
+  if ($code -ne 0) {
+    throw "node の版を確認できませんでした（$NodeCommand）。終了コードは $code です。"
+  }
+  $raw = ""
+  foreach ($part in @($output)) {
+    $line = "$part".Trim()
+    if ($line.StartsWith("{")) { $raw = $line }
+  }
+  if ([string]::IsNullOrWhiteSpace($raw)) {
+    throw "node の版を確認できませんでした（$NodeCommand）。出力が空です。"
+  }
+  try {
+    $json = $raw | ConvertFrom-Json
+  } catch {
+    throw "node の版と実行ファイルを確認できませんでした（$NodeCommand）。"
+  }
+  $versionToken = ConvertTo-NodeVersionToken ([string]$json.version)
+  $execPath = ([string]$json.execPath).Trim()
+  if ([string]::IsNullOrWhiteSpace($versionToken) -or [string]::IsNullOrWhiteSpace($execPath)) {
+    throw "node の版と実行ファイルを確認できませんでした（$NodeCommand）。"
+  }
+  return @{
+    Version = $versionToken
+    ExecPath = $execPath
+  }
+}
+function Assert-BundledNodeFile([string]$ExecPath, [string]$Required) {
+  if ([string]::IsNullOrWhiteSpace($ExecPath) -or -not (Test-Path -LiteralPath $ExecPath -PathType Leaf)) {
+    throw "同梱する node.exe が見つかりません（$ExecPath）。Node.js $Required をインストールし、その node.exe が PATH から起動するようにしてから、もう一度実行してください。"
+  }
+  $ext = [System.IO.Path]::GetExtension($ExecPath)
+  if (-not $ext.Equals(".exe", [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "同梱する Node.js の実行ファイルが .exe ではありません（$ExecPath）。Node.js $Required をインストールし、その node.exe が PATH から起動するようにしてから、もう一度実行してください。"
+  }
+  $info = (Get-Item -LiteralPath $ExecPath).VersionInfo
+  $product = ConvertTo-NodeVersionToken ([string]$info.ProductVersion)
+  $file = ConvertTo-NodeVersionToken ([string]$info.FileVersion)
+  if ($product -ne $Required -and $file -ne $Required) {
+    if ([string]::IsNullOrWhiteSpace($product)) { $product = "なし" }
+    if ([string]::IsNullOrWhiteSpace($file)) { $file = "なし" }
+    throw "同梱する node.exe（$ExecPath）のファイル版が $Required ではありません。ProductVersion は $product、FileVersion は $file です。Node.js $Required をインストールし、その node.exe が PATH から起動するようにしてから、もう一度実行してください。"
+  }
+}
+function Resolve-BundledNodeExe([string]$NodeCommand, [string]$VersionFile) {
+  $required = Read-RequiredNodeVersion -Path $VersionFile
+  $probe = Get-NodeRuntimeProbe -NodeCommand $NodeCommand
+  if ($probe.Version -ne $required) {
+    throw "PATH の node（$NodeCommand）は $($probe.Version) です。同梱できるのは Node.js $required だけです。Node.js $required をインストールし、その node.exe が PATH の先頭に来るようにしてから、もう一度実行してください。"
+  }
+  Assert-BundledNodeFile -ExecPath $probe.ExecPath -Required $required
+  $nodeHash = (Get-FileHash -LiteralPath $probe.ExecPath -Algorithm SHA256 -ErrorAction Stop).Hash
+  if ([string]::IsNullOrWhiteSpace($nodeHash)) {
+    throw "同梱する node.exe（$($probe.ExecPath)）の SHA-256 が空です。読み取れなかったため、同梱を中止しました。"
+  }
+  return @{
+    ExecPath = [string]$probe.ExecPath
+    Hash = [string]$nodeHash
+  }
+}
+function Assert-SameNodeHash([string]$ExpectedHash, [string]$Copied) {
+  $copiedHash = (Get-FileHash -LiteralPath $Copied -Algorithm SHA256 -ErrorAction Stop).Hash
+  if ([string]::IsNullOrWhiteSpace($ExpectedHash) -or [string]::IsNullOrWhiteSpace($copiedHash)) {
+    throw "同梱した node.exe の SHA-256 が空です。確認時は $ExpectedHash、コピー先（$Copied）は $copiedHash です。"
+  }
+  if ($ExpectedHash -ne $copiedHash) {
+    throw "同梱した node.exe の SHA-256 が、確認したときの node.exe と一致しません。確認時は $ExpectedHash、コピー先（$Copied）は $copiedHash です。"
+  }
+}
 
 $version = (Get-Content package.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
 $release = Join-Path $root "release"
@@ -67,8 +178,12 @@ $env:KURU_BUILT_AT = $builtAt
 $env:KURU_FILE_TIME = $fileTime
 $env:KURU_ARCH = $Platform
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-  throw "node が PATH にありません。Node.js を入れてから、リポジトリのルートで npm ci を実行してください。"
+  throw "node が PATH にありません。.node-version に書いた版の Node.js を入れてから、リポジトリのルートで npm ci を実行してください。"
 }
+$nodeCommand = (Get-Command node -ErrorAction Stop).Source
+$resolvedNode = Resolve-BundledNodeExe -NodeCommand $nodeCommand -VersionFile (Join-Path $root ".node-version")
+$nodeSource = [string]$resolvedNode.ExecPath
+$nodeSourceHash = [string]$resolvedNode.Hash
 $identityLines = Invoke-NodeScript -Name "esbuild" -Parts @("scripts", "emit-release-identity.cjs")
 $identityCode = $LASTEXITCODE
 $identityJson = @($identityLines) | Where-Object { $_ -match '^\{' } | Select-Object -Last 1
@@ -105,9 +220,8 @@ function PeMachine([string]$path) {
 }
 
 if (-not (Test-Path -LiteralPath $loader)) { throw "WebView2Loader.dll がありません: $loader" }
-$nodeSource = (Get-Command node -ErrorAction Stop).Source
-if ($Platform -eq "x86" -and (PeMachine $nodeSource) -ne 0x8664) {
-  throw "PATH の node.exe が 64bit ではありません。x86 パッケージの sidecar は 64bit node のままです。"
+if ((PeMachine $nodeSource) -ne 0x8664) {
+  throw "PATH の node.exe が 64bit ではありません。x64 でも x86 でも、sidecar の node.exe は 64bit のままです。"
 }
 
 if (Test-Path $stage) { Get-ChildItem $stage -Force | Remove-Item -Recurse -Force }
@@ -164,7 +278,9 @@ foreach ($name in @("better-sqlite3", "bindings", "file-uri-to-path")) {
 }
 
 Step "node runtime"
-Copy-Item $nodeSource "$stage\node\node.exe"
+$bundledNode = Join-Path $stage "node\node.exe"
+Copy-Item -LiteralPath $nodeSource -Destination $bundledNode
+Assert-SameNodeHash -ExpectedHash $nodeSourceHash -Copied $bundledNode
 
 Step "outlook add-in (csc)"
 # *.test.cs はアドインに入れない。npm run test:cs がコンパイルして実行する。
