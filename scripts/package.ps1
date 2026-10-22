@@ -33,6 +33,62 @@ function Invoke-Esbuild([string[]]$ArgList) {
   try { $first = $stream.ReadByte() } finally { $stream.Dispose() }
   if ($first -eq 35) { & node $bin @ArgList } else { & $bin @ArgList }
 }
+function Read-RequiredNodeVersion([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) {
+    throw ".node-version がありません。同梱する Node.js の版を、リポジトリ直下の .node-version に 1 行で書いてください。"
+  }
+  $text = [System.IO.File]::ReadAllText($Path)
+  if ($text.Length -gt 0 -and [int][char]$text[0] -eq 0xFEFF) {
+    $text = $text.Substring(1)
+  }
+  $text = $text.Replace("`r`n", "`n").Replace("`r", "`n")
+  $found = @()
+  foreach ($part in @($text -split "`n")) {
+    if (-not [string]::IsNullOrWhiteSpace($part)) {
+      $found += $part.Trim()
+    }
+  }
+  if ($found.Count -ne 1) {
+    throw ".node-version には、同梱する Node.js の版を 1 行だけ書いてください。"
+  }
+  $version = [string]$found[0]
+  if ($version.StartsWith("v") -or $version.StartsWith("V")) {
+    $version = $version.Substring(1)
+  }
+  if ($version -notmatch '^\d+\.\d+\.\d+$') {
+    throw ".node-version の「$($found[0])」は版番号ではありません。メジャー、マイナー、パッチをドットで区切った 1 行にしてください。"
+  }
+  return $version
+}
+function Get-NodeExecutableVersion([string]$NodeExe) {
+  if (-not (Test-Path -LiteralPath $NodeExe)) {
+    throw "同梱する node.exe が見つかりません（$NodeExe）。"
+  }
+  $output = & $NodeExe -p "process.version"
+  $code = $LASTEXITCODE
+  if ($code -ne 0) {
+    throw "node.exe の版を確認できませんでした（$NodeExe）。終了コードは $code です。"
+  }
+  $raw = ""
+  foreach ($part in @($output)) {
+    $line = "$part".Trim()
+    if (-not [string]::IsNullOrWhiteSpace($line)) { $raw = $line }
+  }
+  if ([string]::IsNullOrWhiteSpace($raw)) {
+    throw "node.exe の版を確認できませんでした（$NodeExe）。出力が空です。"
+  }
+  if ($raw.StartsWith("v") -or $raw.StartsWith("V")) {
+    $raw = $raw.Substring(1).Trim()
+  }
+  return $raw
+}
+function Assert-BundledNodeVersion([string]$NodeExe, [string]$VersionFile) {
+  $required = Read-RequiredNodeVersion -Path $VersionFile
+  $actual = Get-NodeExecutableVersion -NodeExe $NodeExe
+  if ($actual -ne $required) {
+    throw "PATH の node.exe（$NodeExe）は $actual です。同梱できるのは Node.js $required だけです。Node.js $required をインストールし、その node.exe が PATH の先頭に来るようにしてから、もう一度実行してください。"
+  }
+}
 
 $version = (Get-Content package.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
 $release = Join-Path $root "release"
@@ -67,8 +123,10 @@ $env:KURU_BUILT_AT = $builtAt
 $env:KURU_FILE_TIME = $fileTime
 $env:KURU_ARCH = $Platform
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-  throw "node が PATH にありません。Node.js を入れてから、リポジトリのルートで npm ci を実行してください。"
+  throw "node が PATH にありません。.node-version に書いた版の Node.js を入れてから、リポジトリのルートで npm ci を実行してください。"
 }
+$nodeSource = (Get-Command node -ErrorAction Stop).Source
+Assert-BundledNodeVersion -NodeExe $nodeSource -VersionFile (Join-Path $root ".node-version")
 $identityLines = Invoke-NodeScript -Name "esbuild" -Parts @("scripts", "emit-release-identity.cjs")
 $identityCode = $LASTEXITCODE
 $identityJson = @($identityLines) | Where-Object { $_ -match '^\{' } | Select-Object -Last 1
@@ -105,7 +163,6 @@ function PeMachine([string]$path) {
 }
 
 if (-not (Test-Path -LiteralPath $loader)) { throw "WebView2Loader.dll がありません: $loader" }
-$nodeSource = (Get-Command node -ErrorAction Stop).Source
 if ($Platform -eq "x86" -and (PeMachine $nodeSource) -ne 0x8664) {
   throw "PATH の node.exe が 64bit ではありません。x86 パッケージの sidecar は 64bit node のままです。"
 }
