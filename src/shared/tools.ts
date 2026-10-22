@@ -1,12 +1,14 @@
 import { EVENT_PRESETS, eventChipLabel, parseEventQuery, EventQuery } from "./calendarEvents";
 import { MAX_TOOL_ROUNDS } from "./constants";
 import { parseSlotCall, SlotCall } from "./freeSlots";
+import { normalizeNeedsReplyDays } from "./needsReply";
 
 export const TOOL_GET_OPEN_ITEM = "get_open_item";
 export const TOOL_APPLY_DRAFT = "apply_draft";
 export const TOOL_SEARCH = "search";
 export const TOOL_SEARCH_INDEX = "search_index";
 export const TOOL_SEARCH_SENT = "search_sent";
+export const TOOL_FIND_NEEDS_REPLY = "find_needs_reply";
 export const TOOL_FIND_FREE_SLOTS = "find_free_slots";
 export const TOOL_LIST_EVENTS = "list_events";
 
@@ -50,6 +52,17 @@ const eventParams = {
     from: { type: "string", description: "YYYY-MM-DD。to と組む。両端を含む。31日まで。" },
     to: { type: "string", description: "YYYY-MM-DD。from と組む。" },
     q: { type: "string", description: "件名の部分一致。今日や今週を探すときは空にする。言い換えでは当たらない。" },
+  },
+};
+
+const needsReplyParams = {
+  type: "object",
+  properties: {
+    days: {
+      type: "number",
+      description: "探す日数。1から30。省略すると設定のまま。利用者が日数を指定したときは、長くても短くてもその検索だけに使い、設定は変えない。設定を保存できるのは、直前の結果が期間を広げるか尋ね、その質問の直後の最後の返事が短い肯定で、渡した日数がその結果の days より長く、かつ設定より長いときだけである。同意の前に、結果の days より長い日数は拒否する。省略しても、設定が結果の days より長いなら拒否する。アドレスや鍵は渡せない。",
+    },
+    sender: { type: "string", description: "差出人の名前の一部。空なら全員。" },
   },
 };
 
@@ -119,6 +132,15 @@ export function buildTools(options: { searxng: boolean; argos: boolean }): ToolD
         parameters: sentParams,
       },
     },
+    {
+      type: "function",
+      function: {
+        name: TOOL_FIND_NEEDS_REPLY,
+        description:
+          "受信トレイから、返信が要りそうなメールの一覧を開く。宛先が利用者で未返信のメールと、設定した名前が出てくるメールを探す。利用者が日数を指定したときは、長くても短くても days を渡し、その検索だけに使う。設定は変えない。設定を保存できるのは、直前の結果が期間を広げるか尋ね、その質問の直後の最後の返事が短い肯定で、渡した days がその結果の days より長く、かつ設定より長いときだけである。同意の前に、結果の days より長い日数は渡さない。省略しても、設定がそれより長いときは「同意の前に期間は広げられません。」と返る。期間の指定が無いときは days を省略する。sender は差出人の名前の一部。",
+        parameters: needsReplyParams,
+      },
+    },
   ];
   if (options.searxng) {
     tools.push({
@@ -150,6 +172,7 @@ export type ParsedTool =
   | { name: typeof TOOL_SEARCH; q: string }
   | { name: typeof TOOL_SEARCH_INDEX; q: string }
   | { name: typeof TOOL_SEARCH_SENT; q: string; address: string }
+  | { name: typeof TOOL_FIND_NEEDS_REPLY; days?: number; sender: string }
   | { name: typeof TOOL_FIND_FREE_SLOTS; call: SlotCall }
   | { name: typeof TOOL_LIST_EVENTS; query: EventQuery };
 
@@ -195,6 +218,16 @@ export function parseToolCall(call: ToolCall): { ok: true; tool: ParsedTool } | 
       return { ok: false, error: "検索語を入力してください。" };
     }
     return { ok: true, tool: { name, q, address } };
+  }
+  if (name === TOOL_FIND_NEEDS_REPLY) {
+    let days: number | undefined;
+    if (args.days !== undefined && args.days !== null && args.days !== "") {
+      const numeric = typeof args.days === "number" ? args.days : Number(args.days);
+      if (!Number.isFinite(numeric)) return { ok: false, error: "探す日数が不正です。" };
+      days = normalizeNeedsReplyDays(numeric);
+    }
+    const sender = typeof args.sender === "string" ? args.sender.trim() : "";
+    return { ok: true, tool: { name, days, sender } };
   }
   return { ok: false, error: `未知のツールです。${name}` };
 }
@@ -257,6 +290,11 @@ export function describeToolCall(name: string, rawArguments: string): string {
   }
   if (parsed.tool.name === TOOL_SEARCH_SENT) {
     return `送信済み「${shorten(parsed.tool.q || parsed.tool.address, 20)}」`;
+  }
+  if (parsed.tool.name === TOOL_FIND_NEEDS_REPLY) {
+    const who = parsed.tool.sender ? `「${shorten(parsed.tool.sender, 12)}」` : "";
+    const days = parsed.tool.days ? `${parsed.tool.days}日` : "";
+    return `要返信${who}${days}`;
   }
   return "下書きを書き戻す";
 }

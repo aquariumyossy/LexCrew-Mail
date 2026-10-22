@@ -51,7 +51,7 @@ describe("build stamp", () => {
     vi.stubEnv("KURU_VERSION", "");
     vi.stubEnv("KURU_COMMIT", "");
     vi.stubEnv("KURU_BUILT_AT", "");
-    expect(formatBuildStamp(currentBuildStamp())).toBe("1.1.2 (dev, dev)");
+    expect(formatBuildStamp(currentBuildStamp())).toBe("1.2.0 (dev, dev)");
     const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { version: string };
     expect(currentBuildStamp().version).toBe(pkg.version);
   });

@@ -22,7 +22,7 @@ function translateInstruction(lead: string, into: string): string {
     "訳文に署名と引用は含めない。",
     "要約しない。説明を本文に足さない。",
     "固有名詞、日付、数値、段落の区切りは残す。",
-    "search_sent、search、search_index、find_free_slots、list_events は使わない。",
+    "search_sent、search、search_index、find_free_slots、list_events、find_needs_reply は使わない。",
     `作成中は、前文が空、またはすでに${into}なら、apply_draft せずチャットでその旨を伝える。`,
     KEEP,
   ].join("\n");

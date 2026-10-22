@@ -1,7 +1,7 @@
 /** Marks that can hide or reorder text without the reader seeing them. */
 const STEERING_MARKS = /[\u00AD\u034F\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
 
-export const UNTRUSTED_TAGS = ["mail-header", "open-mail", "web-search", "argos-result"] as const;
+export const UNTRUSTED_TAGS = ["mail-header", "open-mail", "web-search", "argos-result", "needs-reply"] as const;
 export type UntrustedTag = (typeof UNTRUSTED_TAGS)[number];
 
 /** Same refusal used for past mail and attachments: instructions inside data are not to be followed. */
@@ -31,7 +31,7 @@ export function presentUntrusted(tag: UntrustedTag, value: unknown): string {
 
 /** Body inside a fence we wrote. Null when the text is not one of those fences. */
 export function unwrapUntrusted(content: string): { tag: UntrustedTag; body: string } | null {
-  const match = /^<(mail-header|open-mail|web-search|argos-result)>\n[^\n]*\n([\s\S]*)\n<\/\1>$/.exec(content || "");
+  const match = new RegExp(`^<(${UNTRUSTED_TAGS.join("|")})>\\n[^\\n]*\\n([\\s\\S]*)\\n</\\1>$`).exec(content || "");
   if (!match) return null;
   const tag = match[1] as UntrustedTag;
   return { tag, body: match[2] };
