@@ -283,6 +283,7 @@ Copy-Item -LiteralPath $nodeSource -Destination $bundledNode
 Assert-SameNodeHash -ExpectedHash $nodeSourceHash -Copied $bundledNode
 
 Step "outlook add-in (csc)"
+# *.test.cs はアドインに入れない。npm run test:cs がコンパイルして実行する。
 $dllSources = Get-ChildItem outlook\src -Recurse -Filter *.cs | Where-Object {
   $_.Name -notlike "*.test.cs" -and $_.Name -ne "LoadProbe.cs" -and $_.Name -ne "TrayHost.cs"
 } | ForEach-Object { $_.FullName }

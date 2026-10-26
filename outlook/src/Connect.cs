@@ -247,7 +247,10 @@ namespace KuruOutlook
             "readCalendar:function(json){return chrome.webview.hostObjects.sync.bridge.ReadCalendar(json);}," +
             "listMailFiles:function(){return chrome.webview.hostObjects.sync.bridge.ListMailFiles();}," +
             "readMailFile:function(index){return chrome.webview.hostObjects.bridge.ReadMailFile(index);}," +
-            "searchSent:function(json){return chrome.webview.hostObjects.bridge.SearchSent(json);}};";
+            "searchSent:function(json){return chrome.webview.hostObjects.bridge.SearchSent(json);}," +
+            "searchNeedsReply:function(json){return chrome.webview.hostObjects.bridge.SearchNeedsReply(json);}," +
+            "selectNeedsReply:function(json){return chrome.webview.hostObjects.bridge.SelectNeedsReply(json);}," +
+            "openNeedsReply:function(json){return chrome.webview.hostObjects.bridge.OpenNeedsReply(json);}};";
         object _host;
         object _ctp;
         object _watched;

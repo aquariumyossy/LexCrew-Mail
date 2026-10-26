@@ -10,6 +10,7 @@ namespace KuruOutlook
     {
         const string SmtpTag = "http://schemas.microsoft.com/mapi/proptag/0x39FE001F";
         readonly Func<object> _windowOf;
+        readonly NeedsReplyLookup _needsReply = new NeedsReplyLookup();
         string _fileStamp;
         string _fileList;
 
@@ -502,6 +503,21 @@ namespace KuruOutlook
         public string SearchSent(string json)
         {
             return SentLookup.Search(Window(), json);
+        }
+
+        public string SearchNeedsReply(string json)
+        {
+            return _needsReply.Search(Window(), json);
+        }
+
+        public string SelectNeedsReply(string json)
+        {
+            return NeedsReplyLookup.Select(Window(), json);
+        }
+
+        public string OpenNeedsReply(string json)
+        {
+            return NeedsReplyLookup.Open(Window(), json);
         }
 
         public string ReadCalendar(string json)

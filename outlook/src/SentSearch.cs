@@ -180,23 +180,223 @@ namespace KuruOutlook
             prior = Cap(plain.Substring(cut).Trim(), priorMax);
         }
 
+        public static string PlainPreface(string plain)
+        {
+            if (string.IsNullOrEmpty(plain))
+            {
+                return "";
+            }
+            int cut = EarliestPlain(plain);
+            if (cut < 0)
+            {
+                return plain;
+            }
+            return plain.Substring(0, cut);
+        }
+
+        /// <summary>
+        /// A quoted original starts at a separator line (Original Message / 元のメッセージ,
+        /// alone or wrapped in dashes), or at a line-start 差出人: / From: when 送信日時: / Sent: / Date:
+        /// begins one of the next four lines. A line-start 差出人: is also a quote when 日付:
+        /// and either 宛先: or 件名: begin lines in that same window (iPhone / Mac Japanese Mail).
+        /// 差出人: with only 日付: is kept. A sentence that merely contains those words is kept.
+        /// </summary>
         static int EarliestPlain(string plain)
         {
             if (string.IsNullOrEmpty(plain))
             {
                 return -1;
             }
-            string[] markers = { "Original Message", "差出人" };
-            int best = -1;
-            for (int i = 0; i < markers.Length; i++)
+            var starts = new List<int>();
+            var ends = new List<int>();
+            int i = 0;
+            int lineStart = 0;
+            while (i <= plain.Length)
             {
-                int at = plain.IndexOf(markers[i], StringComparison.OrdinalIgnoreCase);
-                if (at >= 0 && (best < 0 || at < best))
+                bool boundary = i == plain.Length || plain[i] == '\n' || plain[i] == '\r';
+                if (boundary)
                 {
-                    best = at;
+                    starts.Add(lineStart);
+                    ends.Add(i);
+                    if (i == plain.Length)
+                    {
+                        break;
+                    }
+                    if (plain[i] == '\r' && i + 1 < plain.Length && plain[i + 1] == '\n')
+                    {
+                        i++;
+                    }
+                    i++;
+                    lineStart = i;
+                    continue;
+                }
+                i++;
+            }
+            for (int n = 0; n < starts.Count; n++)
+            {
+                if (SeparatorQuote(plain, starts[n], ends[n]))
+                {
+                    return starts[n];
+                }
+                if (ReplyHeader(plain, starts[n], ends[n]) && HasDateHeaderSoon(plain, starts, ends, n + 1))
+                {
+                    return starts[n];
+                }
+                if (JapaneseSenderHeader(plain, starts[n], ends[n]) && HasAppleJapaneseHeadersSoon(plain, starts, ends, n + 1))
+                {
+                    return starts[n];
                 }
             }
-            return best;
+            return -1;
+        }
+
+        static bool SeparatorQuote(string text, int start, int end)
+        {
+            int i = SkipSpace(text, start, end);
+            bool dashed = false;
+            if (i < end && text[i] == '-')
+            {
+                while (i < end && text[i] == '-')
+                {
+                    i++;
+                }
+                i = SkipSpace(text, i, end);
+                dashed = true;
+            }
+            string marker = null;
+            if (RegionStarts(text, i, end, "Original Message", true))
+            {
+                marker = "Original Message";
+            }
+            else if (RegionStarts(text, i, end, "元のメッセージ", false))
+            {
+                marker = "元のメッセージ";
+            }
+            if (marker == null)
+            {
+                return false;
+            }
+            i = SkipSpace(text, i + marker.Length, end);
+            if (!dashed)
+            {
+                return i == end;
+            }
+            if (i >= end || text[i] != '-')
+            {
+                return false;
+            }
+            while (i < end && text[i] == '-')
+            {
+                i++;
+            }
+            return SkipSpace(text, i, end) == end;
+        }
+
+        static bool ReplyHeader(string text, int start, int end)
+        {
+            int head = SkipSpace(text, start, end);
+            return HeaderName(text, head, end, "差出人") || HeaderName(text, head, end, "From");
+        }
+
+        static bool DateHeader(string text, int start, int end)
+        {
+            int head = SkipSpace(text, start, end);
+            return HeaderName(text, head, end, "送信日時") || HeaderName(text, head, end, "Sent") || HeaderName(text, head, end, "Date");
+        }
+
+        static bool HasDateHeaderSoon(string text, List<int> starts, List<int> ends, int from)
+        {
+            int last = from + 4;
+            if (last > starts.Count)
+            {
+                last = starts.Count;
+            }
+            for (int n = from; n < last; n++)
+            {
+                if (DateHeader(text, starts[n], ends[n]))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        static bool JapaneseSenderHeader(string text, int start, int end)
+        {
+            int head = SkipSpace(text, start, end);
+            return HeaderName(text, head, end, "差出人");
+        }
+
+        static bool HasAppleJapaneseHeadersSoon(string text, List<int> starts, List<int> ends, int from)
+        {
+            int last = from + 4;
+            if (last > starts.Count)
+            {
+                last = starts.Count;
+            }
+            bool date = false;
+            bool partyOrSubject = false;
+            for (int n = from; n < last; n++)
+            {
+                int head = SkipSpace(text, starts[n], ends[n]);
+                if (HeaderName(text, head, ends[n], "日付"))
+                {
+                    date = true;
+                }
+                if (HeaderName(text, head, ends[n], "宛先") || HeaderName(text, head, ends[n], "件名"))
+                {
+                    partyOrSubject = true;
+                }
+            }
+            return date && partyOrSubject;
+        }
+
+        static int SkipSpace(string text, int index, int end)
+        {
+            while (index < end && char.IsWhiteSpace(text[index]))
+            {
+                index++;
+            }
+            return index;
+        }
+
+        static bool HeaderName(string text, int index, int end, string name)
+        {
+            if (!RegionStarts(text, index, end, name, true))
+            {
+                return false;
+            }
+            int colon = SkipSpace(text, index + name.Length, end);
+            if (colon >= end)
+            {
+                return false;
+            }
+            return text[colon] == ':' || text[colon] == '\uFF1A';
+        }
+
+        static bool RegionStarts(string text, int index, int end, string marker, bool ignoreCase)
+        {
+            if (index < 0 || string.IsNullOrEmpty(marker) || index + marker.Length > end)
+            {
+                return false;
+            }
+            for (int i = 0; i < marker.Length; i++)
+            {
+                char left = text[index + i];
+                char right = marker[i];
+                if (ignoreCase)
+                {
+                    if (char.ToUpperInvariant(left) != char.ToUpperInvariant(right))
+                    {
+                        return false;
+                    }
+                }
+                else if (left != right)
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         public static string Cap(string text, int max)
