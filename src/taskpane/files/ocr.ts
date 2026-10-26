@@ -1,5 +1,5 @@
 import { MAX_OCR_PAGES, RASTER_QUALITY, RASTER_WIDTH } from "../../shared/constants";
-import { FileBody, FileReadError, pdfPagesToText } from "../../shared/attachedFiles";
+import { FileBody, FileReadError, fileExtension, fileKind, pdfPagesToText } from "../../shared/attachedFiles";
 import { EMPTY_SCAN_ERROR } from "../../shared/ocr";
 import { openPdf } from "./pdf";
 
@@ -7,6 +7,18 @@ import { openPdf } from "./pdf";
 
 function canvasImage(canvas: HTMLCanvasElement): string {
   return canvas.toDataURL("image/jpeg", RASTER_QUALITY);
+}
+
+/** MIME for a picture the app already accepts. jpg, jpeg, and jpe are one type. */
+function imageMime(name: string): string {
+  if (fileKind(name) !== "image") {
+    return "";
+  }
+  const ext = fileExtension(name);
+  if (ext === "jpg" || ext === "jpeg" || ext === "jpe") {
+    return "image/jpeg";
+  }
+  return `image/${ext}`;
 }
 
 /** A picture is already an image, so it goes to the model as it stands. */
@@ -76,7 +88,8 @@ export async function ocrBytes(
     onProgress(read.filter((item) => item !== undefined).length, total);
   };
   if (input.image || !input.name.toLowerCase().endsWith(".pdf")) {
-    await page(await imageDataUrl(new Blob([input.bytes])), 0);
+    // A blob with no type is read back as application/octet-stream, which imageDataUrl rejects.
+    await page(await imageDataUrl(new Blob([input.bytes], { type: imageMime(input.name) })), 0);
   } else {
     await renderPdfPages(input.bytes, total, page, signal);
   }
